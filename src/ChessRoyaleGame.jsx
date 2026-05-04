@@ -398,6 +398,12 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
     }, 900);
   }
 
+  function rollInitialDice() {
+    const playerId = myPlayerId || humanPlayer?.id;
+    if (!playerId) return;
+    rollForPlayer(playerId);
+  }
+
   function applyHumanRoll(roll) {
     setGs(prev => applyBattleRoll(prev, roll));
   }
@@ -843,25 +849,39 @@ function debugGiveHumanCard(specialType, type, effect) {
           {gs.phase === 'rolloff' && (
             <div className="panel-box">
               <div className="panel-title">Tirada inicial</div>
+              <div style={{ marginBottom: 10 }}>
+                <button
+                  className={`btn btn-primary ${rolloffDice.playerId === myPlayerId && !rolloffDice.revealing ? 'is-rolling' : ''}`}
+                  style={{ width: '100%' }}
+                  disabled={
+                    !myPlayerId ||
+                    Boolean(gs.rolloff[myPlayerId]) ||
+                    (rolloffDice.playerId && rolloffDice.playerId !== myPlayerId)
+                  }
+                  onClick={rollInitialDice}
+                >
+                  {rolloffDice.playerId === myPlayerId
+                    ? `Dado: ${rolloffDice.value}`
+                    : (gs.rolloff[myPlayerId] ? `Tu tirada: ${gs.rolloff[myPlayerId]}` : 'Tirar dado inicial')}
+                </button>
+              </div>
               <div className="royale-roll-list">
                 {gs.players.map(player => (
                   (() => {
                     const isRollingPlayer = rolloffDice.playerId === player.id;
                     return (
-                  <button
+                  <div
                     key={player.id}
                     className={`royale-roll-row ${isRollingPlayer && !rolloffDice.revealing ? 'is-rolling' : ''} ${isRollingPlayer && rolloffDice.revealing ? 'is-revealed' : ''}`}
-                    disabled={Boolean(gs.rolloff[player.id]) || (gs.vsBots && player.isBot) || (rolloffDice.playerId && !isRollingPlayer)}
-                    onClick={() => rollForPlayer(player.id)}
                   >
                     <span>{player.name}</span>
                     <strong>
                       {isRollingPlayer
                         ? rolloffDice.value
-                        : gs.rolloff[player.id] || (gs.vsBots && player.isBot ? 'Auto' : 'Tirar')}
+                        : gs.rolloff[player.id] || (gs.vsBots && player.isBot ? 'Auto' : 'Pendiente')}
                     </strong>
-                    {isRollingPlayer && <small>{rolloffDice.revealing ? 'Tu tirada' : 'Detener'}</small>}
-                  </button>
+                    {isRollingPlayer && <small>{rolloffDice.revealing ? 'Tu tirada' : 'Rodando'}</small>}
+                  </div>
                     );
                   })()
                 ))}
