@@ -111,7 +111,11 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
   const giantMovePlayer = gs.players.find(p => p.id === gs.giantMove?.playerId);
   const isBotMatch = Boolean(gs.vsBots);
   const isHumanTurn = isNetworkGame ? activePlayer?.id === myPlayerId : (!isBotMatch || activePlayer?.id === humanPlayer?.id);
-  const boardPlayer = giantMovePlayer || (isBotMatch && !isHumanTurn ? humanPlayer : activePlayer);
+  // Online fairness: never render the board from rival perspective.
+  // In network games we always anchor the camera to the local player.
+  const boardPlayer = isNetworkGame
+    ? humanPlayer
+    : (giantMovePlayer || (isBotMatch && !isHumanTurn ? humanPlayer : activePlayer));
   const visibleMoves = boardPlayer && isHumanTurn && !gs.giantMove ? getRoyaleVisibleMoves(gs, boardPlayer) : [];
   const winner = gs.players.find(p => p.id === gs.winner);
   const minimapPlayer = gs.players.find(p => p.id === gs.minimapPlayerId);
