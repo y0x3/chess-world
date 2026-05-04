@@ -1089,6 +1089,17 @@ body {
   text-decoration: line-through;
 }
 
+.royale-player-pill.is-offline {
+  background: rgba(129, 24, 24, 0.26);
+  border-color: rgba(255, 118, 118, 0.58);
+  box-shadow: 0 0 10px rgba(255, 118, 118, 0.2);
+}
+
+.royale-offline-badge {
+  color: #ff7676;
+  font-weight: 700;
+}
+
 .royale-dot {
   width: 0.55rem;
   height: 0.55rem;

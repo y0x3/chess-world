@@ -7,6 +7,7 @@ const { pathToFileURL } = require('url');
 
 const PORT = Number(process.env.PORT) || 4000;
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const DISCONNECT_FORFEIT_MS = 60 * 1000;
 
 function createRoomCode(existingCodes) {
   for (let tries = 0; tries < 3000; tries++) {
@@ -74,11 +75,83 @@ async function main() {
       playerCount: room.playerCount,
       status: room.status,
       visibility: room.visibility,
+      disconnectedPlayers: [...room.disconnectDeadlines.entries()].map(([playerId, deadlineAt]) => ({
+        playerId,
+        deadlineAt,
+      })),
     });
   }
 
   function emitRoomsUpdate() {
     io.emit('roomsUpdate', { rooms: publicRoomsSnapshot() });
+  }
+
+  function scheduleDisconnectForfeit(roomCode, playerId) {
+    const room = getRoom(roomCode);
+    if (!room) return;
+    const existing = room.disconnectTimers.get(playerId);
+    if (existing) clearTimeout(existing);
+
+    const deadlineAt = Date.now() + DISCONNECT_FORFEIT_MS;
+    room.disconnectDeadlines.set(playerId, deadlineAt);
+    emitRoomInfo(roomCode);
+
+    const timer = setTimeout(() => {
+      const currentRoom = getRoom(roomCode);
+      if (!currentRoom || currentRoom.status !== 'playing' || !currentRoom.gs) return;
+      if (!currentRoom.disconnectedPlayerIds.has(playerId)) return;
+
+      const target = currentRoom.gs.players.find(player => player.id === playerId);
+      if (!target || !target.alive) return;
+
+      const players = currentRoom.gs.players.map(player =>
+        player.id === playerId ? { ...player, alive: false, lives: 0, cards: [] } : player
+      );
+      const alive = players.filter(player => player.alive);
+      const nextTurn =
+        currentRoom.gs.turnOrder[currentRoom.gs.currentTurnIndex] === playerId
+          ? nextAliveTurnIndex(players, currentRoom.gs.turnOrder, currentRoom.gs.currentTurnIndex)
+          : currentRoom.gs.currentTurnIndex;
+
+      if (alive.length <= 1) {
+        const winnerId = alive[0]?.id || null;
+        const winnerName = winnerId ? players.find(player => player.id === winnerId)?.name : null;
+        currentRoom.gs = {
+          ...currentRoom.gs,
+          players,
+          phase: 'result',
+          winner: winnerId,
+          currentRoll: null,
+          giantMove: null,
+          pendingTacticCard: null,
+          minimapPlayerId: null,
+          message: winnerName
+            ? `${target.name} se desconecto por mas de 60s. ${winnerName} gana la partida.`
+            : `${target.name} se desconecto por mas de 60s. Partida finalizada.`,
+        };
+        currentRoom.status = 'finished';
+      } else {
+        currentRoom.gs = {
+          ...currentRoom.gs,
+          players,
+          currentTurnIndex: nextTurn,
+          currentRoll: null,
+          giantMove: null,
+          pendingTacticCard: null,
+          minimapPlayerId: null,
+          message: `${target.name} se desconecto por mas de 60s y queda eliminado por inactividad.`,
+        };
+      }
+
+      currentRoom.disconnectedPlayerIds.delete(playerId);
+      currentRoom.disconnectTimers.delete(playerId);
+      currentRoom.disconnectDeadlines.delete(playerId);
+      emitRoomInfo(roomCode);
+      broadcastRoom(roomCode);
+      emitRoomsUpdate();
+    }, DISCONNECT_FORFEIT_MS);
+
+    room.disconnectTimers.set(playerId, timer);
   }
 
   function registerPlayerToRoom(socket, roomCode, playerName, passwordAttempt = '') {
@@ -103,6 +176,13 @@ async function main() {
     socket.data.playerId = playerId;
     socket.join(roomCode);
     socket.emit('assigned', { playerId });
+    room.disconnectedPlayerIds.delete(playerId);
+    const pendingTimer = room.disconnectTimers.get(playerId);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      room.disconnectTimers.delete(playerId);
+    }
+    room.disconnectDeadlines.delete(playerId);
     emitRoomInfo(roomCode);
     emitRoomsUpdate();
 
@@ -144,6 +224,9 @@ async function main() {
         gs: null,
         lastInitConfig: null,
         status: 'waiting',
+        disconnectTimers: new Map(),
+        disconnectedPlayerIds: new Set(),
+        disconnectDeadlines: new Map(),
       };
       rooms.set(roomCode, room);
       socket.emit('roomCreated', { roomCode });
@@ -276,9 +359,25 @@ async function main() {
       if (!room) return;
 
       const idx = room.lobby.findIndex(entry => entry.socketId === socket.id);
+      const removed = idx >= 0 ? room.lobby[idx] : null;
       if (idx >= 0) room.lobby.splice(idx, 1);
 
+      if (room.status === 'playing' && removed?.playerId && room.gs) {
+        const disconnectedPlayer = room.gs.players.find(player => player.id === removed.playerId);
+        if (disconnectedPlayer?.alive) {
+          room.disconnectedPlayerIds.add(removed.playerId);
+          room.gs = {
+            ...room.gs,
+            message: `${disconnectedPlayer.name} se desconecto. Si no vuelve en 60s, perdera por inactividad.`,
+          };
+          emitRoomInfo(roomCode);
+          broadcastRoom(roomCode);
+          scheduleDisconnectForfeit(roomCode, removed.playerId);
+        }
+      }
+
       if (!room.lobby.length) {
+        room.disconnectTimers.forEach(timer => clearTimeout(timer));
         rooms.delete(roomCode);
         emitRoomsUpdate();
         return;

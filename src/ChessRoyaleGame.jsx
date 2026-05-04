@@ -96,6 +96,7 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
   const [roomInfo, setRoomInfo] = useState(null);
   const [joinError, setJoinError] = useState(null);
   const [copiedRoomCode, setCopiedRoomCode] = useState(false);
+  const [nowMs, setNowMs] = useState(Date.now());
   const [diceRolling, setDiceRolling] = useState(false);
   const [diceRevealing, setDiceRevealing] = useState(false);
   const [displayedDice, setDisplayedDice] = useState(1);
@@ -221,6 +222,12 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
       socketRef.current = null;
     };
   }, [isNetworkGame, serverUrl, online?.playerName, online?.mode, online?.roomCode, online?.visibility, online?.roomPassword, online?.joinPassword]);
+
+  useEffect(() => {
+    if (!isNetworkGame || !roomInfo?.disconnectedPlayers?.length) return undefined;
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [isNetworkGame, roomInfo?.disconnectedPlayers?.length]);
 
   useEffect(() => {
     if (!diceRolling || !activePlayerId) return undefined;
@@ -712,12 +719,23 @@ function debugGiveHumanCard(specialType, type, effect) {
         </div>
         <div className="royale-living">
           {gs.players.map(player => (
-            <div key={player.id} className={`royale-player-pill ${!player.alive ? 'is-dead' : ''} ${activeId === player.id ? 'is-active' : ''}`}>
+            (() => {
+              const disconnected = roomInfo?.disconnectedPlayers?.find(entry => entry.playerId === player.id);
+              const isDisconnected = Boolean(disconnected);
+              const secondsLeft = disconnected ? Math.max(0, Math.ceil((disconnected.deadlineAt - nowMs) / 1000)) : 0;
+              return (
+            <div
+              key={player.id}
+              className={`royale-player-pill ${!player.alive ? 'is-dead' : ''} ${activeId === player.id ? 'is-active' : ''} ${isDisconnected ? 'is-offline' : ''}`}
+            >
               <span className="royale-dot" style={{ background: player.color }} />
               <span>{player.name}</span>
               <span>{'\u2665'.repeat(player.lives)}</span>
               <span>{royalePieceSymbol(player.type)}</span>
+              {isDisconnected && <span className="royale-offline-badge">OFFLINE {secondsLeft}s</span>}
             </div>
+              );
+            })()
           ))}
         </div>
         <button className="btn btn-ghost" style={{ fontSize: '0.7rem', padding: '4px 12px' }} onClick={onBack}>Menu</button>
