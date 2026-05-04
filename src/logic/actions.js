@@ -1,6 +1,6 @@
-import { PIECES } from '../shared/pieces';
-import { ROYALE_MAX_CARDS, ROYALE_SOUNDS, ROYALE_TACTIC_META } from './constants';
-import { royalePieceSymbol } from './movements';
+import { PIECES } from '../shared/pieces.js';
+import { ROYALE_MAX_CARDS, ROYALE_SOUNDS, ROYALE_TACTIC_META } from './constants.js';
+import { royalePieceSymbol } from './movements.js';
 
 export const makeRoyaleCard = (specialType, type, effect = 'piece') => ({
   id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -35,73 +35,44 @@ export function playRoyaleSound(name) {
   audio.play().catch(() => {});
 }
 
-export function createWallPawns(gs, playerId, center, deps) {
+export function createWallPawns(gs, playerId, target, deps) {
   const { getRoyaleSize, occupiedSquaresWithGiants, royaleKey, inRoyaleBounds, randomInt } = deps;
   const size = getRoyaleSize(gs);
   const occupied = occupiedSquaresWithGiants(gs.players || [], gs.giantPieces || []);
   (gs.neutralPawns || []).forEach(pawn => occupied.add(royaleKey(pawn.row, pawn.col)));
-  const isFree = pos =>
-    inRoyaleBounds(pos.row, pos.col, size) &&
-    !gs.closedCells[royaleKey(pos.row, pos.col)] &&
-    !occupied.has(royaleKey(pos.row, pos.col));
 
-  const buildCandidates = orientation => {
-    const axis = orientation === 'horizontal' ? 'col' : 'row';
-    const fixedAxis = orientation === 'horizontal' ? 'row' : 'col';
-    const fixedValue = center[fixedAxis];
-    const values = [];
-    for (let delta = -9; delta <= 9; delta++) {
-      const pos = orientation === 'horizontal'
-        ? { row: fixedValue, col: center.col + delta }
-        : { row: center.row + delta, col: fixedValue };
-      if (isFree(pos)) values.push({ pos, value: pos[axis] });
+  const side = 2 + randomInt(4); // 2x2 a 5x5
+  const half = Math.floor(side / 2);
+  const cells = [];
+  const trappedPlayerIds = [];
+
+  for (let row = target.row - half; row < target.row - half + side; row++) {
+    for (let col = target.col - half; col < target.col - half + side; col++) {
+      if (!inRoyaleBounds(row, col, size)) continue;
+      if (gs.closedCells[royaleKey(row, col)]) continue;
+      cells.push({
+        id: `wall-${Date.now()}-${playerId}-${row}-${col}`,
+        ownerId: playerId,
+        row,
+        col,
+      });
     }
-    values.sort((a, b) => a.value - b.value);
-    return values;
-  };
-  const hasCenter = (items, orientation) => {
-    const value = orientation === 'horizontal' ? center.col : center.row;
-    return items.some(item => item.value === value);
-  };
-  const contiguousSegments = items => {
-    const segments = [];
-    let segment = [];
-    for (let i = 0; i < items.length; i++) {
-      if (!segment.length || items[i].value === segment[segment.length - 1].value + 1) {
-        segment.push(items[i]);
-      } else {
-        segments.push(segment);
-        segment = [items[i]];
-      }
-    }
-    if (segment.length) segments.push(segment);
-    return segments;
-  };
-  const bestSegment = ['horizontal', 'vertical']
-    .map(orientation => contiguousSegments(buildCandidates(orientation))
-      .filter(segment => hasCenter(segment, orientation))
-      .sort((a, b) => b.length - a.length)[0]
-      ? { orientation, segment: contiguousSegments(buildCandidates(orientation))
-        .filter(segment => hasCenter(segment, orientation))
-        .sort((a, b) => b.length - a.length)[0] }
-      : null)
-    .filter(Boolean)
-    .sort((a, b) => b.segment.length - a.segment.length)[0];
-  if (!bestSegment || bestSegment.segment.length < 3) return [];
-  const maxLength = Math.min(10, bestSegment.segment.length);
-  const targetLength = Math.min(maxLength, 3 + randomInt(8));
-  const centerValue = bestSegment.orientation === 'horizontal' ? center.col : center.row;
-  const centerIndex = bestSegment.segment.findIndex(item => item.value === centerValue);
-  let start = Math.max(0, centerIndex - Math.floor(targetLength / 2));
-  if (start + targetLength > bestSegment.segment.length) {
-    start = bestSegment.segment.length - targetLength;
   }
-  const line = bestSegment.segment.slice(start, start + targetLength).map(item => item.pos);
-  return line.map((pos, index) => ({
-    id: `wall-${Date.now()}-${playerId}-${index}`,
-    ...pos,
-    ownerId: playerId,
-  }));
+
+  // detectar jugadores atrapados dentro del cubo
+  (gs.players || []).forEach(player => {
+    if (!player.alive) return;
+    const isInside = cells.some(cell => cell.row === player.row && cell.col === player.col);
+    if (!isInside) return;
+    const canEscape =
+      player.boosted ||
+      player.type === 'N' ||
+      (player.cards || []).some(card => card.effect === 'piece' && card.type === 'N') ||
+      (player.cards || []).some(card => card.boosted);
+    if (!canEscape) trappedPlayerIds.push(player.id);
+  });
+
+  return { side, cells, trappedPlayerIds };
 }
 
 export function createScorchedArea(gs, playerId, target, deps) {
@@ -126,7 +97,7 @@ export function createScorchedArea(gs, playerId, target, deps) {
 }
 
 export function applyTargetedTactic(gs, playerId, card, target, deps) {
-  const { createScorchedArea: createScorchedAreaFromDeps, createWallPawns: createWallPawnsFromDeps, royaleKey } = deps;
+  const { createScorchedArea: createScorchedAreaFromDeps, createWallPawns: createWallPawnsFromDeps, royaleKey, nextAliveTurnIndex } = deps;
   if (!card || !ROYALE_TACTIC_META[card.effect]?.target) return gs;
   if (gs.phase !== 'battle' || gs.currentRoll || gs.giantMove || gs.turnOrder[gs.currentTurnIndex] !== playerId) return gs;
   if (gs.cardUsedThisTurn) return { ...gs, pendingTacticCard: null, minimapPlayerId: null, message: 'Ya usaste una carta este turno.' };
@@ -137,6 +108,7 @@ export function applyTargetedTactic(gs, playerId, card, target, deps) {
   let fogZones = gs.fogZones || [];
   let radioactiveCells = gs.radioactiveCells || [];
   let neutralPawns = gs.neutralPawns || [];
+  let trappedPlayerIds = [];
 
   if (card.effect === 'fog') {
     const enemyZones = (gs.players || [])
@@ -163,23 +135,45 @@ export function applyTargetedTactic(gs, playerId, card, target, deps) {
     message = `${actor.name} activo Tierra Quemada en un area de ${side} x ${side} casillas.`;
   }
 
-  if (card.effect === 'wall') {
-    const created = createWallPawnsFromDeps(gs, playerId, target);
-    if (!created.length) return { ...gs, message: 'No hay casillas vacias suficientes para levantar el Muro de Peones.' };
-    neutralPawns = [...neutralPawns, ...created];
-    message = `${actor.name} levanto un Muro de Peones con ${created.length} obstaculo${created.length === 1 ? '' : 's'}.`;
-  }
+    if (card.effect === 'wall') {
+      const { side, cells, trappedPlayerIds: trapped } = createWallPawnsFromDeps(gs, playerId, target);
+      trappedPlayerIds = trapped;
+      if (!cells.length) return { ...gs, message: 'No hay casillas validas para colocar el Cubo de Peones.' };
+      neutralPawns = [...neutralPawns, ...cells];
+
+      const trappedNames = trappedPlayerIds
+        .map(id => gs.players.find(p => p.id === id)?.name)
+        .filter(Boolean);
+
+      message = `${actor.name} coloco un Cubo de Peones de ${side} x ${side}.${trappedNames.length ? ` ${trappedNames.join(', ')} ${trappedNames.length === 1 ? 'quedo atrapado' : 'quedaron atrapados'} y pierden su proximo turno.` : ''}`;
+    }
+    
+    const selfTrapped = trappedPlayerIds.includes(playerId);
 
   return {
     ...gs,
-    players: gs.players.map(player => player.id === playerId ? { ...player, cards: (player.cards || []).filter(item => item.id !== card.id) } : player),
+    players: gs.players.map(player => {
+      if (player.id === playerId) return { 
+        ...player, 
+        cards: (player.cards || []).filter(item => item.id !== card.id),
+        trappedTurns: selfTrapped ? 0 : player.trappedTurns,
+      };
+      if (trappedPlayerIds.includes(player.id)) return { ...player, trappedTurns: 1 };
+      return player;
+    }),
     fogZones,
     radioactiveCells,
     neutralPawns,
     cardUsedThisTurn: true,
     pendingTacticCard: null,
     minimapPlayerId: null,
-    message: `${message} Tira el dado y continua tu turno.`,
+    currentRoll: selfTrapped ? null : gs.currentRoll,
+    currentTurnIndex: selfTrapped 
+      ? nextAliveTurnIndex(gs.players, gs.turnOrder, gs.currentTurnIndex) 
+      : gs.currentTurnIndex,
+    message: selfTrapped 
+      ? `${message} ${actor.name} quedo atrapado en su propio muro y pierde su turno.`
+      : `${message} Tira el dado y continua tu turno.`,
   };
 }
 
@@ -409,7 +403,6 @@ export function moveRoyalePlayer(gs, destination, deps) {
   const mapSize = getRoyaleSize(gs);
   const activeId = gs.turnOrder[gs.currentTurnIndex];
   const active = gs.players.find(p => p.id === activeId);
-  if (!active || !active.alive || !gs.currentRoll) return gs;
   if (gs.closedCells[royaleKey(destination.row, destination.col)]) return gs;
   if (getGiantPieceAt(gs.giantPieces, destination.row, destination.col)) return gs;
   if (getNeutralPawnAt(gs.neutralPawns || [], destination.row, destination.col)) return gs;

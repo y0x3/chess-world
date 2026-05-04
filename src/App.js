@@ -3,10 +3,13 @@ import './App.css';
 import BlindChessGame, { initBlindGame } from './BlindChess';
 import ChessRoyaleGame, { initChessRoyale } from './ChessRoyaleGame';
 
+const DEFAULT_SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:4000';
+
 export default function App() {
   const [screen, setScreen] = useState('menu');
   const [config, setConfig] = useState({ timeLimit: 60, playerW: 'Jugador', playerB: 'Negras', vsBot: false });
   const [gameState, setGameState] = useState(null);
+  const [royaleOnline, setRoyaleOnline] = useState(null);
 
   function startBlindChess(cfg) {
     setConfig(cfg);
@@ -19,19 +22,49 @@ export default function App() {
     setScreen('royale');
   }
 
+  function startChessRoyaleOnline(cfg) {
+    setRoyaleOnline(cfg);
+    setGameState(initChessRoyale({ ...cfg, vsBots: false, playerCount: cfg.playerCount }));
+    setScreen('royale_online');
+  }
+
   if (screen === 'menu') return (
     <MenuScreen onSelect={mode => {
       if (mode === 'blind_human') setScreen('setup_human');
       if (mode === 'blind_bot') setScreen('setup_bot');
       if (mode === 'chess_royale') setScreen('setup_royale');
+      if (mode === 'chess_royale_online') setScreen('setup_royale_online');
     }} />
   );
 
   if (screen === 'setup_human') return <SetupScreen vsBot={false} onBack={() => setScreen('menu')} onStart={startBlindChess} />;
   if (screen === 'setup_bot') return <SetupScreen vsBot={true} onBack={() => setScreen('menu')} onStart={startBlindChess} />;
   if (screen === 'setup_royale') return <RoyaleSetupScreen onBack={() => setScreen('menu')} onStart={startChessRoyale} />;
+  if (screen === 'setup_royale_online') return <RoyaleOnlineSetupScreen onBack={() => setScreen('menu')} onStart={startChessRoyaleOnline} />;
   if (screen === 'game') return <BlindChessGame initialState={gameState} config={config} onBack={() => setScreen('menu')} />;
   if (screen === 'royale') return <ChessRoyaleGame initialState={gameState} onBack={() => setScreen('menu')} />;
+  if (screen === 'royale_online') {
+    return (
+      <ChessRoyaleGame
+        initialState={gameState}
+        onBack={() => {
+          setRoyaleOnline(null);
+          setScreen('menu');
+        }}
+        online={{
+          serverUrl: royaleOnline?.serverUrl || DEFAULT_SOCKET_URL,
+          playerName: royaleOnline?.playerName,
+          config: {
+            playerCount: royaleOnline?.playerCount,
+            mapSize: royaleOnline?.mapSize,
+            initialLives: royaleOnline?.initialLives,
+            specialCounts: royaleOnline?.specialCounts,
+            vsBots: false,
+          },
+        }}
+      />
+    );
+  }
 }
 
 function MenuScreen({ onSelect }) {
@@ -91,8 +124,13 @@ function MenuScreen({ onSelect }) {
         <div className="mode-card mode-card-royale" onClick={() => onSelect('chess_royale')}>
           <div className="mode-badge-bot">NEW</div>
           <div className="mode-icon">{'\u265B'}</div>
-          <div className="mode-name">ChessRoyale</div>
+          <div className="mode-name">ChessRoyale vs Bots</div>
           <div className="mode-desc">Reyes sobreviven en un mapa gigante con dados, niebla y casillas que entregan cartas de pieza para usar en el turno clave.</div>
+        </div>
+        <div className="mode-card mode-card-royale" onClick={() => onSelect('chess_royale_online')}>
+          <div className="mode-icon">{'\u25CE'}</div>
+          <div className="mode-name">ChessRoyale Online</div>
+          <div className="mode-desc">Multijugador en linea. Arranca el servidor con npm run server y conecta desde varias pestanas o dispositivos en la misma red.</div>
         </div>
       </div>
     </div>
@@ -297,6 +335,161 @@ function RoyaleSetupScreen({ onBack, onStart }) {
 
         <button className="btn btn-primary" onClick={() => onStart({ humanName, playerCount, mapSize, initialLives, specialCounts, debugMode, vsBots: true })}>
           Iniciar ChessRoyale
+        </button>
+        <div style={{ marginTop: '1rem' }}>
+          <button className="btn btn-ghost" style={{ width: '100%' }} onClick={onBack}>Volver al Menu</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RoyaleOnlineSetupScreen({ onBack, onStart }) {
+  const [playerName, setPlayerName] = useState('Jugador');
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SOCKET_URL);
+  const [playerCount, setPlayerCount] = useState(2);
+  const [mapSize, setMapSize] = useState(60);
+  const [initialLives, setInitialLives] = useState(3);
+  const suggestedMapSize = count => Math.max(40, Math.min(96, 24 + count * 9));
+  const suggestedSpecialCounts = size => {
+    const areaScale = (size * size) / (80 * 80);
+    return {
+      basic: Math.max(20, Math.round(120 * areaScale)),
+      improved: Math.max(10, Math.round(56 * areaScale)),
+      reveal: Math.max(8, Math.round(44 * areaScale)),
+      special: Math.max(6, Math.round(32 * areaScale)),
+    };
+  };
+  const [specialCounts, setSpecialCounts] = useState(() => suggestedSpecialCounts(60));
+  const setSpecialCount = (type, value) => {
+    const nextValue = Math.max(0, Math.floor(Number(value) || 0));
+    setSpecialCounts(counts => ({ ...counts, [type]: nextValue }));
+  };
+  const setCountAndMap = count => {
+    const nextCount = Math.max(2, Math.min(8, Number(count) || 2));
+    const nextMapSize = suggestedMapSize(nextCount);
+    setPlayerCount(nextCount);
+    setMapSize(nextMapSize);
+    setSpecialCounts(suggestedSpecialCounts(nextMapSize));
+  };
+  const setSizeAndSpecials = size => {
+    const nextMapSize = Math.max(30, Math.min(120, Number(size) || 30));
+    setMapSize(nextMapSize);
+    setSpecialCounts(suggestedSpecialCounts(nextMapSize));
+  };
+
+  return (
+    <div className="setup-screen">
+      <div className="setup-card">
+        <div className="setup-title">ChessRoyale Online</div>
+        <div className="setup-sub">El estado lo autoriza el servidor (Express + Socket.io). Ejecuta <code>npm run server</code> en otra terminal antes de unirte.</div>
+
+        <div className="form-group">
+          <label className="form-label">URL del servidor</label>
+          <input className="form-input" value={serverUrl} onChange={e => setServerUrl(e.target.value)} placeholder="http://localhost:4000" />
+          <div className="setup-hint">En otra PC de la red usa la IP de tu PC en lugar de localhost.</div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Tu nombre</label>
+          <input className="form-input" value={playerName} onChange={e => setPlayerName(e.target.value)} />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Jugadores en la partida</label>
+          <input
+            className="form-input"
+            type="number"
+            min={2}
+            max={8}
+            value={playerCount}
+            onChange={e => setCountAndMap(e.target.value)}
+          />
+        </div>
+
+        <div className="royale-player-count">
+          {[2, 3, 4, 5, 6, 7, 8].map(count => (
+            <button
+              key={count}
+              className={`royale-count-btn ${playerCount === count ? 'is-selected' : ''}`}
+              onClick={() => setCountAndMap(count)}
+            >
+              {count}
+            </button>
+          ))}
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Tamano del mapa</label>
+          <input
+            className="form-input"
+            type="number"
+            min={30}
+            max={120}
+            value={mapSize}
+            onChange={e => setSizeAndSpecials(e.target.value)}
+          />
+          <div className="setup-hint">Recomendado para {playerCount} jugadores: {suggestedMapSize(playerCount)} x {suggestedMapSize(playerCount)}.</div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Vidas por jugador</label>
+          <input
+            className="form-input"
+            type="number"
+            min={1}
+            max={10}
+            value={initialLives}
+            onChange={e => setInitialLives(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Casillas especiales del mapa</label>
+          <div className="royale-special-counts">
+            <label>
+              <span><i className="royale-mini-swatch basic" /> Basicas</span>
+              <input className="form-input" type="number" min={0} value={specialCounts.basic} onChange={e => setSpecialCount('basic', e.target.value)} />
+            </label>
+            <label>
+              <span><i className="royale-mini-swatch improved" /> Mejoradas</span>
+              <input className="form-input" type="number" min={0} value={specialCounts.improved} onChange={e => setSpecialCount('improved', e.target.value)} />
+            </label>
+            <label>
+              <span><i className="royale-mini-swatch reveal" /> Tacticas</span>
+              <input className="form-input" type="number" min={0} value={specialCounts.reveal} onChange={e => setSpecialCount('reveal', e.target.value)} />
+            </label>
+            <label>
+              <span><i className="royale-mini-swatch special" /> Gigantes</span>
+              <input className="form-input" type="number" min={0} value={specialCounts.special} onChange={e => setSpecialCount('special', e.target.value)} />
+            </label>
+          </div>
+        </div>
+
+        <div className="bot-info-box">
+          <div className="bot-info-icon">{'\u25CE'}</div>
+          <div>
+            <div className="bot-info-title">Multijugador</div>
+            <div className="bot-info-desc">
+              Deben conectarse exactamente el numero de jugadores elegido; cuando la sala esta llena, el servidor genera el mapa y el sorteo inicial. Los dados y la zona son autoritativos en el servidor.
+            </div>
+          </div>
+        </div>
+
+        <button
+          className="btn btn-primary"
+          onClick={() =>
+            onStart({
+              serverUrl: serverUrl.trim() || DEFAULT_SOCKET_URL,
+              playerName,
+              playerCount,
+              mapSize,
+              initialLives,
+              specialCounts,
+            })
+          }
+        >
+          Conectar y esperar sala
         </button>
         <div style={{ marginTop: '1rem' }}>
           <button className="btn btn-ghost" style={{ width: '100%' }} onClick={onBack}>Volver al Menu</button>

@@ -1,5 +1,5 @@
-import { ROYALE_GIANT_SIZE, ROYALE_VIEW_SIZE } from './constants';
-import { getRoyaleSize, inRoyaleBounds, royaleKey } from './geometry';
+import { ROYALE_GIANT_SIZE, ROYALE_VIEW_SIZE } from './constants.js';
+import { getRoyaleSize, inRoyaleBounds, royaleKey } from './geometry.js';
 
 export const royalePieceSymbol = type => ({
   K: '\u265A',
@@ -96,6 +96,41 @@ export function isRoyaleLineBlocked(gs, from, to, exceptPlayerId = null) {
   return false;
 }
 
+// Verifica si el salto de caballo cruza al menos un peón neutral en su camino.
+// Un caballo "salta" en L: comprobamos las dos casillas intermedias más cercanas
+// al origen en cada eje. Si ambas están bloqueadas por peones neutrales, el salto
+// queda impedido (el muro es físicamente infranqueable en esa dirección).
+export function isKnightJumpBlockedByWall(neutralPawns = [], from, to) {
+  const dr = to.row - from.row; // ±1 o ±2
+  const dc = to.col - from.col; // ±1 o ±2
+  const absDr = Math.abs(dr);
+  const absDc = Math.abs(dc);
+
+  // Casillas "intermedias" que el caballo necesita atravesar físicamente.
+  // Para un salto (±2, ±1): la celda adyacente en el eje largo Y la celda
+  // adyacente en el eje corto son las únicas que forman el "hueco" necesario.
+  // Si AMBAS están bloqueadas por peones, no hay hueco y el salto falla.
+  let gateA, gateB;
+
+  if (absDr === 2 && absDc === 1) {
+    // Movimiento principalmente vertical: el caballo necesita espacio
+    // en la dirección del eje largo (dr) o en el eje corto (dc).
+    gateA = { row: from.row + Math.sign(dr), col: from.col };
+    gateB = { row: from.row + Math.sign(dr), col: from.col + Math.sign(dc) };
+  } else {
+    // absDr === 1, absDc === 2 — movimiento principalmente horizontal
+    gateA = { row: from.row, col: from.col + Math.sign(dc) };
+    gateB = { row: from.row + Math.sign(dr), col: from.col + Math.sign(dc) };
+  }
+
+  const aBlocked = Boolean(getNeutralPawnAt(neutralPawns, gateA.row, gateA.col));
+  const bBlocked = Boolean(getNeutralPawnAt(neutralPawns, gateB.row, gateB.col));
+
+  // El salto queda bloqueado solo si AMBAS celdas de la "puerta" están ocupadas.
+  // Si queda al menos un hueco, el caballo puede saltar.
+  return aBlocked && bBlocked;
+}
+
 export function isRoyaleMoveValid(type, from, to, distance, boosted, size = getRoyaleSize(from)) {
   const dr = to.row - from.row;
   const dc = to.col - from.col;
@@ -128,6 +163,8 @@ export function getRoyaleVisibleMoves(gs, player, getRoyaleViewOrigin) {
       if (getGiantPieceAt(gs.giantPieces, r, c)) continue;
       if (getNeutralPawnAt(gs.neutralPawns || [], r, c)) continue;
       if ((player.type === 'Q' || player.type === 'R' || player.type === 'B') && isRoyaleLineBlocked(gs, player, { row: r, col: c }, player.id)) continue;
+      // El caballo no puede saltar si el muro cierra ambas celdas de la "puerta"
+      if (player.type === 'N' && isKnightJumpBlockedByWall(gs.neutralPawns || [], player, { row: r, col: c })) continue;
       if (isRoyaleMoveValid(player.type, player, { row: r, col: c }, gs.currentRoll, player.boosted, getRoyaleSize(gs))) {
         moves.push([r, c]);
       }
@@ -151,6 +188,8 @@ export function getRoyaleLegalMoves(gs, player, roll, getRoyaleViewOrigin) {
       if (getGiantPieceAt(gs.giantPieces, row, col)) continue;
       if (getNeutralPawnAt(gs.neutralPawns || [], row, col)) continue;
       if ((player.type === 'Q' || player.type === 'R' || player.type === 'B') && isRoyaleLineBlocked(gs, player, { row, col }, player.id)) continue;
+      // El caballo no puede saltar si el muro cierra ambas celdas de la "puerta"
+      if (player.type === 'N' && isKnightJumpBlockedByWall(gs.neutralPawns || [], player, { row, col })) continue;
       if (isRoyaleMoveValid(player.type, player, { row, col }, roll, player.boosted, size)) {
         moves.push({ row, col });
       }

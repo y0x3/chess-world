@@ -3,7 +3,7 @@ import {
   ROYALE_MIN_SIZE,
   ROYALE_MAX_SIZE,
   ROYALE_VIEW_SIZE,
-} from './constants';
+} from './constants.js';
 
 export const royaleKey = (row, col) => `${row},${col}`;
 export const clampRoyaleMapSize = size => Math.max(ROYALE_MIN_SIZE, Math.min(ROYALE_MAX_SIZE, Number(size) || ROYALE_DEFAULT_SIZE));

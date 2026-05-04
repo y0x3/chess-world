@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { io } from 'socket.io-client';
 import { PIECES } from './shared/pieces';
 import { chooseBotRoyaleMove as chooseBotRoyaleMoveBase, chooseBotRoyaleCard as chooseBotRoyaleCardBase } from './ai/botBrain';
 import RoyaleBoard from './components/RoyaleBoard';
@@ -25,23 +26,23 @@ import {
   getRoyaleCardKind,
   addRoyaleCards,
   playRoyaleSound,
-  createWallPawns as createWallPawnsBase,
-  createScorchedArea as createScorchedAreaBase,
-  applyTargetedTactic as applyTargetedTacticBase,
-  playRoyaleCardState as playRoyaleCardStateBase,
-  applyGiantPieceDamage as applyGiantPieceDamageBase,
-  applyGiantMove as applyGiantMoveBase,
-  moveRoyalePlayer as moveRoyalePlayerBase,
-  applyRoyaleRolloff as applyRoyaleRolloffBase,
 } from './logic/actions';
+import {
+  royaleEngineBrowser,
+  initChessRoyale,
+  nextAliveTurnIndex,
+  getTurnsUntilPlayer,
+  occupiedSquaresWithGiants,
+  applyBattleRoll,
+  mergeGiantMoveOutcome,
+  chooseAutomaticGiantMove,
+  chooseRandomMovableGiant,
+} from './logic/royaleEngine';
 import {
   royaleKey,
   clampRoyaleMapSize,
-  clampRoyaleLives,
-  defaultRoyaleMapSize,
   getRoyaleSize,
   inRoyaleBounds,
-  royaleDistance,
   royaleZoneDistance,
   getRoyaleViewOrigin,
   isInsideRoyaleView,
@@ -50,10 +51,6 @@ import {
   royalePieceSymbol,
   getGiantPieceAt,
   giantPieceCells,
-  isGiantPlacementClear,
-  getGiantLegalMoves as getGiantLegalMovesBase,
-  isGiantMoveValid,
-  isInGiantPiece,
   getRoyalePlayerAt,
   getNeutralPawnAt,
   getRadioactiveCellAt,
@@ -61,250 +58,26 @@ import {
   isRoyaleLineBlocked,
   isRoyaleMoveValid as isRoyaleMoveValidBase,
   getRoyaleVisibleMoves as getRoyaleVisibleMovesBase,
-  getRoyaleLegalMoves as getRoyaleLegalMovesBase,
 } from './logic/movements';
 
+const {
+  moveRoyalePlayer,
+  applyGiantMove,
+  playRoyaleCardState,
+  applyTargetedTactic,
+  applyRoyaleRolloff,
+} = royaleEngineBrowser;
+
 const randomInt = max => Math.floor(Math.random() * max);
-const keepRoyaleEvents = events => events.slice(-40);
 const isRoyaleMoveValid = (type, from, to, distance, boosted, size = getRoyaleSize(from)) =>
   isRoyaleMoveValidBase(type, from, to, distance, boosted, size);
 const getRoyaleVisibleMoves = (gs, player) => getRoyaleVisibleMovesBase(gs, player, getRoyaleViewOrigin);
-const getRoyaleLegalMoves = (gs, player, roll) => getRoyaleLegalMovesBase(gs, player, roll, getRoyaleViewOrigin);
-const getGiantLegalMoves = (gs, giant) => getGiantLegalMovesBase(gs, giant);
-const createWallPawns = (gs, playerId, center) =>
-  createWallPawnsBase(gs, playerId, center, { getRoyaleSize, occupiedSquaresWithGiants, royaleKey, inRoyaleBounds, randomInt });
-const createScorchedArea = (gs, playerId, target) =>
-  createScorchedAreaBase(gs, playerId, target, { getRoyaleSize, inRoyaleBounds, royaleKey, randomInt });
-const applyTargetedTactic = (gs, playerId, card, target) =>
-  applyTargetedTacticBase(gs, playerId, card, target, { createScorchedArea, createWallPawns, royaleKey });
-const playRoyaleCardState = (gs, playerId, cardId) =>
-  playRoyaleCardStateBase(gs, playerId, cardId, { applyTargetedTacticMeta: ROYALE_TACTIC_META, getRoyaleCardLabel });
-const applyGiantPieceDamage = (players, giantPieces, movedGiant, closedCells, mapSize, actor = {}) =>
-  applyGiantPieceDamageBase(players, giantPieces, movedGiant, closedCells, mapSize, actor, {
-    giantPieceCells,
-    royaleKey,
-    randomRoyaleEdgeSquare,
-    randomRoyaleSquare,
-    occupiedSquaresWithGiants,
-    transferEliminatedCards,
-  });
-const applyGiantMove = (gs, actorId, giantId, destination) =>
-  applyGiantMoveBase(gs, actorId, giantId, destination, {
-    getRoyaleSize,
-    isGiantMoveValid,
-    isGiantPlacementClear,
-    applyGiantPieceDamage,
-  });
-const moveRoyalePlayer = (gs, destination) =>
-  moveRoyalePlayerBase(gs, destination, {
-    getRoyaleSize,
-    royaleKey,
-    getGiantPieceAt,
-    getNeutralPawnAt,
-    isRoyaleLineBlocked,
-    isRoyaleMoveValid,
-    occupiedSquaresWithGiants,
-    getRoyalePlayerAt,
-    randomRoyaleEdgeSquare,
-    randomRoyaleSquare,
-    transferEliminatedCards,
-    applyRoyaleSpecial,
-    chooseAutomaticGiantMove,
-    applyGiantMove,
-    chooseRandomMovableGiant,
-    getRadioactiveCellAt,
-    nextAliveTurnIndex,
-    shrinkRoyaleZone,
-    applyClosedZoneDamage,
-    keepRoyaleEvents,
-  });
-const applyRoyaleRolloff = (gs, playerId, forcedRoll = null) =>
-  applyRoyaleRolloffBase(gs, playerId, forcedRoll, { randomInt });
+const getRoyaleLegalMoves = (gs, player, roll) => royaleEngineBrowser.getRoyaleLegalMoves(gs, player, roll);
+const getGiantLegalMoves = (gs, giant) => royaleEngineBrowser.getGiantLegalMoves(gs, giant);
 const chooseBotRoyaleMove = (gs, player, roll) =>
   chooseBotRoyaleMoveBase(gs, player, roll, { getRoyaleLegalMoves, getRoyalePlayerAt, royaleKey, royaleZoneDistance, randomInt });
 const chooseBotRoyaleCard = (gs, player) =>
   chooseBotRoyaleCardBase(gs, player, { getRoyaleLegalMoves, getRoyalePlayerAt, royaleKey, royaleZoneDistance });
-const royaleStartRadius = size => Math.ceil((size - 1) * 0.72);
-const royaleMinRadius = size => Math.max(5, Math.floor(size * 0.1));
-const royaleShrinkPerRound = size => Math.max(1, Math.round(size / 40));
-const royaleSpawnDistance = size => Math.max(8, Math.floor(size * 0.35));
-const getDefaultRoyaleSpecialCounts = size => {
-  const areaScale = (size * size) / (ROYALE_DEFAULT_SIZE * ROYALE_DEFAULT_SIZE);
-  return {
-    basic: Math.max(20, Math.round(120 * areaScale)),
-    improved: Math.max(10, Math.round(56 * areaScale)),
-    reveal: Math.max(8, Math.round(44 * areaScale)),
-    special: Math.max(6, Math.round(32 * areaScale)),
-  };
-};
-const getRoyaleSpecialCounts = (size, counts = {}) => {
-  const defaults = getDefaultRoyaleSpecialCounts(size);
-  return {
-    basic: Math.max(0, Number.isFinite(Number(counts.basic)) ? Math.floor(Number(counts.basic)) : defaults.basic),
-    improved: Math.max(0, Number.isFinite(Number(counts.improved)) ? Math.floor(Number(counts.improved)) : defaults.improved),
-    reveal: Math.max(0, Number.isFinite(Number(counts.reveal)) ? Math.floor(Number(counts.reveal)) : defaults.reveal),
-    special: Math.max(0, Number.isFinite(Number(counts.special)) ? Math.floor(Number(counts.special)) : defaults.special),
-  };
-};
-function buildRoyaleZone(size, center, radius) {
-  const closedCells = {};
-  let closedCount = 0;
-
-  for (let row = 0; row < size; row++) {
-    for (let col = 0; col < size; col++) {
-      if (royaleZoneDistance(row, col, center) > radius) {
-        closedCells[royaleKey(row, col)] = true;
-        closedCount++;
-      }
-    }
-  }
-
-  return { closedCells, closedCount };
-}
-
-function randomRoyaleSquare(size = ROYALE_DEFAULT_SIZE, occupied = new Set(), closedCells = {}) {
-  for (let i = 0; i < 1000; i++) {
-    const row = randomInt(size);
-    const col = randomInt(size);
-    const key = royaleKey(row, col);
-    if (!occupied.has(key) && !closedCells[key]) return { row, col };
-  }
-  return { row: randomInt(size), col: randomInt(size) };
-}
-
-function randomRoyaleEdgeSquare(size, occupied = new Set(), closedCells = {}) {
-  const edges = [];
-  for (let i = 0; i < size; i++) {
-    edges.push({ row: 0, col: i }, { row: size - 1, col: i }, { row: i, col: 0 }, { row: i, col: size - 1 });
-  }
-  const available = edges.filter(pos => !occupied.has(royaleKey(pos.row, pos.col)) && !closedCells[royaleKey(pos.row, pos.col)]);
-  if (!available.length) return null;
-  return available[randomInt(available.length)];
-}
-
-function randomSeparatedRoyaleSquare(size, existingPlayers, occupied) {
-  const minDistance = royaleSpawnDistance(size);
-  for (let i = 0; i < 2000; i++) {
-    const pos = randomRoyaleSquare(size, occupied);
-    if (existingPlayers.every(player => royaleDistance(player, pos) >= minDistance)) return pos;
-  }
-  return randomRoyaleSquare(size, occupied);
-}
-
-function generateRoyaleSpecials(size, playerPositions = [], blockedPositions = [], counts = null) {
-  const specials = {};
-  const occupied = new Set(playerPositions.map(p => royaleKey(p.row, p.col)));
-  blockedPositions.forEach(pos => occupied.add(royaleKey(pos.row, pos.col)));
-  const specialCounts = getRoyaleSpecialCounts(size, counts);
-  const addCells = (type, count) => {
-    const safeCount = Math.min(count, Math.max(0, size * size - occupied.size));
-    for (let i = 0; i < safeCount; i++) {
-      const pos = randomRoyaleSquare(size, occupied);
-      const key = royaleKey(pos.row, pos.col);
-      specials[key] = type;
-      occupied.add(key);
-    }
-  };
-
-  addCells('basic', specialCounts.basic);
-  addCells('improved', specialCounts.improved);
-  addCells('reveal', specialCounts.reveal);
-  addCells('special', specialCounts.special);
-  return specials;
-}
-
-function randomGiantSquare(size, occupied = new Set(), closedCells = {}, giantPieces = []) {
-  const maxAnchor = size - ROYALE_GIANT_SIZE + 1;
-  for (let i = 0; i < 1500; i++) {
-    const row = randomInt(maxAnchor);
-    const col = randomInt(maxAnchor);
-    const candidate = { row, col };
-    const cells = giantPieceCells(candidate);
-    if (cells.every(cell => !occupied.has(royaleKey(cell.row, cell.col))) && isGiantPlacementClear(size, candidate, closedCells, giantPieces)) {
-      return candidate;
-    }
-  }
-  return { row: randomInt(maxAnchor), col: randomInt(maxAnchor) };
-}
-
-function generateRoyaleGiantPieces(size, players, closedCells = {}) {
-  const occupied = new Set(players.map(player => royaleKey(player.row, player.col)));
-  return ROYALE_GIANT_PIECES.reduce((acc, template) => {
-    const pos = randomGiantSquare(size, occupied, closedCells, acc);
-    const piece = { ...template, ...pos };
-    giantPieceCells(piece).forEach(cell => occupied.add(royaleKey(cell.row, cell.col)));
-    acc.push(piece);
-    return acc;
-  }, []);
-}
-
-function occupiedSquaresWithGiants(players, giantPieces, exceptPlayerId = null) {
-  const occupied = new Set(players.filter(p => p.alive && p.id !== exceptPlayerId).map(p => royaleKey(p.row, p.col)));
-  giantPieces.forEach(piece => giantPieceCells(piece).forEach(cell => occupied.add(royaleKey(cell.row, cell.col))));
-  return occupied;
-}
-
-function initChessRoyale(config = {}) {
-  const playerCount = Math.max(2, Math.min(ROYALE_PLAYERS.length, Number(config.playerCount) || 4));
-  const mapSize = clampRoyaleMapSize(config.mapSize || defaultRoyaleMapSize(playerCount));
-  const zoneStartRadius = royaleStartRadius(mapSize);
-  const vsBots = Boolean(config.vsBots);
-  const debugMode = Boolean(config.debugMode);
-  const initialLives = clampRoyaleLives(config.initialLives);
-  const humanName = config.humanName?.trim() || 'Tu';
-  const specialCounts = getRoyaleSpecialCounts(mapSize, config.specialCounts);
-  const playerTemplates = ROYALE_PLAYERS.slice(0, playerCount).map((player, index) => ({
-    ...player,
-    name: index === 0 ? humanName : `Bot ${index + 1}`,
-    isBot: vsBots && index !== 0,
-    isHuman: !vsBots || index === 0,
-  }));
-  const occupied = new Set();
-  const zoneCenter = { row: (mapSize - 1) / 2, col: (mapSize - 1) / 2 };
-  const initialZone = buildRoyaleZone(mapSize, zoneCenter, zoneStartRadius);
-  const players = playerTemplates.reduce((acc, player) => {
-    const pos = randomSeparatedRoyaleSquare(mapSize, acc, occupied);
-    occupied.add(royaleKey(pos.row, pos.col));
-    acc.push({ ...player, ...pos, lives: initialLives, alive: true, type: 'K', boosted: false, temporaryPower: false, pendingPower: null, cards: [], revealEnemies: false, secondChance: false, lastRoll: null });
-    return acc;
-  }, []);
-  const giantPieces = generateRoyaleGiantPieces(mapSize, players, initialZone.closedCells);
-
-  return {
-    phase: 'rolloff',
-    config: { playerCount, vsBots, humanName, mapSize, initialLives, debugMode, specialCounts },
-    mapSize,
-    players,
-    giantPieces,
-    neutralPawns: [],
-    fogZones: [],
-    radioactiveCells: [],
-    specials: generateRoyaleSpecials(mapSize, players, giantPieces.flatMap(giantPieceCells), specialCounts),
-    zoneCenter,
-    zoneRadius: zoneStartRadius,
-    closedCells: initialZone.closedCells,
-    closedCount: initialZone.closedCount,
-    roundsCompleted: 0,
-    roundMoves: [],
-    rolloff: {},
-    turnOrder: [],
-    currentTurnIndex: 0,
-    currentRoll: null,
-    cardUsedThisTurn: false,
-    vsBots,
-    debugMode,
-    humanPlayerId: 'p1',
-    botThinkingPlayerId: null,
-    minimapPlayerId: null,
-    selectedPlayerId: null,
-    pendingTacticCard: null,
-    giantMove: null,
-    events: [],
-    lastDeathEvent: null,
-    message: 'Tira el dado por cada jugador. El mayor inicia la partida.',
-    winner: null,
-  };
-}
 
 function canSeeRoyalePlayer(observer, target, gs) {
   if (!observer?.alive || !target?.alive || observer.id === target.id) return false;
@@ -313,170 +86,30 @@ function canSeeRoyalePlayer(observer, target, gs) {
   return !fogZone || fogZone.ownerId === observer.id;
 }
 
-function transferEliminatedCards(players, killerId, victimId, stolenCards = []) {
-  const cards = stolenCards.filter(Boolean);
-  return players.map(player => {
-    if (player.id === victimId) return { ...player, cards: [] };
-    if (cards.length && player.id === killerId && player.alive) {
-      return { ...player, cards: addRoyaleCards(player.cards || [], cards) };
-    }
-    return player;
-  });
-}
-
-function getTurnsUntilPlayer(gs, playerId) {
-  if (gs.phase !== 'battle' || !gs.turnOrder.length) return 0;
-  for (let i = 0; i < gs.turnOrder.length; i++) {
-    const index = (gs.currentTurnIndex + i) % gs.turnOrder.length;
-    const player = gs.players.find(p => p.id === gs.turnOrder[index]);
-    if (!player?.alive) continue;
-    if (player.id === playerId) return i;
-  }
-  return 0;
-}
-
-function applyRoyaleSpecial(player, specialType) {
-  if (specialType === 'basic') {
-    const type = ROYALE_BASIC_PIECES[randomInt(ROYALE_BASIC_PIECES.length)];
-    const card = makeRoyaleCard(specialType, type);
-    const cards = player.cards || [];
-    if (cards.length >= ROYALE_MAX_CARDS) return { player, text: 'Casilla basica: mano llena, no puedes tomar mas cartas.', card: null };
-    return {
-      player: { ...player, cards: addRoyaleCards(cards, [card]) },
-      text: `Casilla basica: robaste carta de ${PIECES[type].label}.`,
-      card,
-    };
-  }
-  if (specialType === 'improved') {
-    const type = ROYALE_IMPROVED_PIECES[randomInt(ROYALE_IMPROVED_PIECES.length)];
-    const card = makeRoyaleCard(specialType, type);
-    const cards = player.cards || [];
-    if (cards.length >= ROYALE_MAX_CARDS) return { player, text: 'Casilla mejorada: mano llena, no puedes tomar mas cartas.', card: null };
-    return {
-      player: { ...player, cards: addRoyaleCards(cards, [card]) },
-      text: `Casilla mejorada: robaste carta de ${PIECES[type].label} mejorada.`,
-      card,
-    };
-  }
-  if (specialType === 'reveal') {
-    const effect = ROYALE_TACTIC_CARDS[randomInt(ROYALE_TACTIC_CARDS.length)];
-    const card = makeRoyaleCard(specialType, null, effect);
-    const cards = player.cards || [];
-    if (cards.length >= ROYALE_MAX_CARDS) return { player, text: 'Casilla tactica: mano llena, no puedes tomar mas cartas.', card: null };
-    return {
-      player: { ...player, cards: addRoyaleCards(cards, [card]) },
-      text: `Casilla tactica: robaste ${getRoyaleCardLabel(card)}.`,
-      card,
-    };
-  }
-  if (specialType === 'special') {
-    return { player, text: 'Casilla especial: puedes mover una pieza gigante.' };
-  }
-  return { player, text: '' };
-}
-
-function nextAliveTurnIndex(players, turnOrder, currentTurnIndex) {
-  for (let i = 1; i <= turnOrder.length; i++) {
-    const nextIndex = (currentTurnIndex + i) % turnOrder.length;
-    const nextPlayer = players.find(p => p.id === turnOrder[nextIndex]);
-    if (nextPlayer?.alive) return nextIndex;
-  }
-  return currentTurnIndex;
-}
-
-function shrinkRoyaleZone(gs) {
-  const size = getRoyaleSize(gs);
-  const nextRadius = Math.max(royaleMinRadius(size), gs.zoneRadius - royaleShrinkPerRound(size));
-  const nextZone = buildRoyaleZone(size, gs.zoneCenter, nextRadius);
-
-  return {
-    zoneRadius: nextRadius,
-    closedCells: nextZone.closedCells,
-    closedCount: nextZone.closedCount,
-    added: Math.max(0, nextZone.closedCount - gs.closedCount),
-  };
-}
-
-function applyClosedZoneDamage(players, closedCells, turnInfo = {}) {
-  const size = turnInfo.mapSize || ROYALE_DEFAULT_SIZE;
-  let message = '';
-  const events = [];
-  const giantPieces = turnInfo.giantPieces || [];
-  const occupied = occupiedSquaresWithGiants(
-    players.filter(p => !closedCells[royaleKey(p.row, p.col)]),
-    giantPieces
-  );
-  const updated = players.map(player => {
-    if (!player.alive || !closedCells[royaleKey(player.row, player.col)]) return player;
-    const lives = player.lives - 1;
-    message += ` ${player.name} quedo en zona cerrada y pierde una vida.`;
-    if (lives <= 0) {
-      if (player.secondChance) {
-        const edge = randomRoyaleEdgeSquare(size, occupied, closedCells);
-        if (edge) {
-          occupied.add(royaleKey(edge.row, edge.col));
-          message += ` ${player.name} activo Segunda Oportunidad y reaparece en el borde.`;
-          return { ...player, lives: 1, row: edge.row, col: edge.col, type: 'K', boosted: false, temporaryPower: false, pendingPower: null, cards: [], revealEnemies: false, secondChance: false };
-        }
-      }
-      events.push({
-        id: `zone-${Date.now()}-${player.id}-${turnInfo.turn || 0}`,
-        type: 'zone-death',
-        text: `${player.name} murio por la zona.`,
-        victimId: player.id,
-        victimName: player.name,
-        at: { row: player.row, col: player.col },
-        turn: turnInfo.turn,
-        radius: turnInfo.radius,
-        mapSize: size,
-      });
-      return { ...player, lives: 0, alive: false, cards: [] };
-    }
-    const respawn = randomRoyaleSquare(size, occupied, closedCells);
-    occupied.add(royaleKey(respawn.row, respawn.col));
-    return { ...player, lives, row: respawn.row, col: respawn.col, type: 'K', boosted: false, temporaryPower: false, pendingPower: null, cards: [], revealEnemies: false };
-  });
-
-  return { players: updated, message, events };
-}
-
-function chooseAutomaticGiantMove(gs) {
-  const giant = chooseRandomMovableGiant(gs);
-  if (!giant) return null;
-  const options = getGiantLegalMoves(gs, giant).map(move => ({ giant, move }));
-  if (!options.length) return null;
-
-  const attackOptions = options.filter(option => {
-    const moved = { ...option.giant, ...option.move };
-    return gs.players.some(player => player.alive && isInGiantPiece(moved, player.row, player.col));
-  });
-  const pool = attackOptions.length ? attackOptions : options;
-  return pool[randomInt(pool.length)];
-}
-
-function chooseRandomMovableGiant(gs) {
-  const movable = (gs.giantPieces || []).filter(giant => getGiantLegalMoves(gs, giant).length);
-  if (!movable.length) return null;
-  return movable[randomInt(movable.length)];
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬ INIT STATE Ã¢â€â‚¬Ã¢â€â‚¬
-function ChessRoyaleGame({ initialState, onBack }) {
+function ChessRoyaleGame({ initialState, onBack, online }) {
+  const [trapMessage, setTrapMessage] = useState(null);
+  const [debugCardPick, setDebugCardPick] = useState(null);
   const [gs, setGs] = useState(initialState);
+  const [assignedPlayerId, setAssignedPlayerId] = useState(null);
+  const [serverSynced, setServerSynced] = useState(!online);
   const [diceRolling, setDiceRolling] = useState(false);
   const [diceRevealing, setDiceRevealing] = useState(false);
   const [displayedDice, setDisplayedDice] = useState(1);
   const [rolloffDice, setRolloffDice] = useState({ playerId: null, value: 1, revealing: false });
   const diceRevealTimer = useRef(null);
   const rolloffRevealTimer = useRef(null);
+  const socketRef = useRef(null);
   const soundStateRef = useRef({ phase: initialState.phase, eventIds: new Set((initialState.events || []).map(event => event.id)) });
   const battleMusicRef = useRef(null);
+  const serverUrl = online ? (online.serverUrl || process.env.REACT_APP_SOCKET_URL || '') : '';
+  const isNetworkGame = Boolean(serverUrl);
   const activeId = gs.turnOrder[gs.currentTurnIndex];
   const activePlayer = gs.players.find(p => p.id === activeId) || gs.players.find(p => p.alive);
-  const humanPlayer = gs.players.find(p => p.id === gs.humanPlayerId) || gs.players.find(p => !p.isBot) || gs.players[0];
+  const myPlayerId = assignedPlayerId ?? gs.humanPlayerId;
+  const humanPlayer = gs.players.find(p => p.id === myPlayerId) || gs.players.find(p => !p.isBot) || gs.players[0];
   const giantMovePlayer = gs.players.find(p => p.id === gs.giantMove?.playerId);
   const isBotMatch = Boolean(gs.vsBots);
-  const isHumanTurn = !isBotMatch || activePlayer?.id === humanPlayer?.id;
+  const isHumanTurn = isNetworkGame ? activePlayer?.id === myPlayerId : (!isBotMatch || activePlayer?.id === humanPlayer?.id);
   const boardPlayer = giantMovePlayer || (isBotMatch && !isHumanTurn ? humanPlayer : activePlayer);
   const visibleMoves = boardPlayer && isHumanTurn && !gs.giantMove ? getRoyaleVisibleMoves(gs, boardPlayer) : [];
   const winner = gs.players.find(p => p.id === gs.winner);
@@ -491,7 +124,10 @@ function ChessRoyaleGame({ initialState, onBack }) {
   const canSeeActiveRival = isBotMatch && !isHumanTurn && canSeeRoyalePlayer(humanPlayer, activePlayer, gs);
   const visibleRivalRoll = gs.botRevealedRoll?.playerId === activePlayer?.id ? gs.botRevealedRoll.value : null;
   const importantEvents = (gs.events || []).filter(event => event.type === 'kill' || event.type === 'zone-death' || event.type === 'giant-death' || event.type === 'giant-hit' || event.type === 'radioactive-death').slice(-4).reverse();
-  const humanLost = gs.vsBots && gs.phase === 'result' && gs.lastDeathEvent?.victimId === gs.humanPlayerId;
+  const humanLost =
+    gs.phase === 'result' &&
+    gs.lastDeathEvent?.victimId === myPlayerId &&
+    (gs.vsBots || isNetworkGame);
   const mapSize = getRoyaleSize(gs);
   const debugEnabled = Boolean(gs.debugMode || gs.config?.debugMode);
   const activeCards = activePlayer?.cards || [];
@@ -538,9 +174,28 @@ function ChessRoyaleGame({ initialState, onBack }) {
   }, [gs.phase, gs.events]);
 
   useEffect(() => {
+    if (!isNetworkGame) return undefined;
+    const socket = io(serverUrl, { path: '/socket.io', transports: ['websocket', 'polling'] });
+    socketRef.current = socket;
+    socket.on('assigned', ({ playerId }) => setAssignedPlayerId(playerId));
+    socket.on('stateUpdate', next => {
+      setGs(next);
+      setServerSynced(true);
+    });
+    socket.emit('join', {
+      playerName: online?.playerName?.trim() || 'Jugador',
+      config: online?.config || { playerCount: 2, vsBots: false, mapSize: 60, initialLives: 3 },
+    });
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [isNetworkGame, serverUrl, online?.playerName]);
+
+  useEffect(() => {
     if (!diceRolling || !activePlayerId) return undefined;
     const timer = setInterval(() => {
-      setDisplayedDice(activePlayerBoosted ? 10 + randomInt(71) : 1 + randomInt(6));
+      setDisplayedDice(activePlayerBoosted ? 10 + randomInt(71) : 1 + randomInt(10));
     }, 90);
     return () => clearInterval(timer);
   }, [diceRolling, activePlayerId, activePlayerBoosted]);
@@ -592,7 +247,7 @@ function ChessRoyaleGame({ initialState, onBack }) {
   }, []);
 
   useEffect(() => {
-    if (!gs.vsBots || gs.phase !== 'rolloff') return undefined;
+    if (isNetworkGame || !gs.vsBots || gs.phase !== 'rolloff') return undefined;
     const nextBot = gs.players.find(player => player.isBot && !gs.rolloff[player.id]);
     if (!nextBot) return undefined;
 
@@ -601,7 +256,7 @@ function ChessRoyaleGame({ initialState, onBack }) {
   }, [gs.vsBots, gs.phase, gs.rolloff, gs.players]);
 
   useEffect(() => {
-    if (gs.giantMove || !gs.vsBots || gs.phase !== 'battle' || !activePlayer?.isBot || gs.botThinkingPlayerId) return undefined;
+    if (isNetworkGame || gs.giantMove || !gs.vsBots || gs.phase !== 'battle' || !activePlayer?.isBot || gs.botThinkingPlayerId) return undefined;
 
     setGs(prev => ({
       ...prev,
@@ -612,24 +267,37 @@ function ChessRoyaleGame({ initialState, onBack }) {
       minimapPlayerId: null,
       selectedPlayerId: null,
       pendingTacticCard: null,
-      message: `${activePlayer.name} tirando. Faltan ${getTurnsUntilPlayer(prev, prev.humanPlayerId)} turnos para ti.`,
+      message: `${activePlayer.name} tirando. Faltan ${getTurnsUntilPlayer(prev, myPlayerId)} turnos para ti.`,
     }));
     return undefined;
   }, [gs.giantMove, gs.vsBots, gs.phase, activePlayer?.id, activePlayer?.isBot, activePlayer?.name, gs.botThinkingPlayerId]);
 
   useEffect(() => {
-    if (gs.giantMove || !gs.vsBots || gs.phase !== 'battle' || !activePlayer?.isBot || gs.botThinkingPlayerId !== activePlayer.id) return undefined;
+    if (isNetworkGame || gs.giantMove || !gs.vsBots || gs.phase !== 'battle' || !activePlayer?.isBot || gs.botThinkingPlayerId !== activePlayer.id) return undefined;
 
     const timer = setTimeout(() => {
       setGs(prev => {
         const bot = prev.players.find(p => p.id === prev.turnOrder[prev.currentTurnIndex]);
         if (!bot?.isBot) return prev;
+        if (bot.trappedTurns && bot.trappedTurns > 0) {
+          return {
+            ...prev,
+            players: prev.players.map(p => p.id === bot.id ? { ...p, trappedTurns: p.trappedTurns - 1 } : p),
+            currentTurnIndex: nextAliveTurnIndex(prev.players, prev.turnOrder, prev.currentTurnIndex),
+            currentRoll: null,
+            cardUsedThisTurn: false,
+            botThinkingPlayerId: null,
+            botRevealedRoll: null,
+            botPendingCardText: null,
+            message: `${bot.name} esta atrapado por el Cubo de Peones y pierde su turno.`,
+          };
+        }
 
         if (!prev.currentRoll) {
           const card = chooseBotRoyaleCard(prev, bot);
           const cardState = card ? playRoyaleCardState(prev, bot.id, card.id) : prev;
           const activeBot = cardState.players.find(p => p.id === cardState.turnOrder[cardState.currentTurnIndex]);
-          const roll = activeBot.boosted ? 10 + randomInt(71) : 1 + randomInt(6);
+          const roll = activeBot.boosted ? 10 + randomInt(71) : 1 + randomInt(10);
           const human = cardState.players.find(p => p.id === cardState.humanPlayerId);
           const canSeeRoll = canSeeRoyalePlayer(human, activeBot, cardState);
           const cardText = card ? ` uso ${getRoyaleCardLabel(card)}${card.boosted ? ' mejorada' : ''} y` : '';
@@ -673,6 +341,17 @@ function ChessRoyaleGame({ initialState, onBack }) {
   }, [gs.giantMove, gs.vsBots, gs.phase, gs.currentRoll, activePlayer?.id, activePlayer?.isBot, gs.botThinkingPlayerId]);
 
   function rollForPlayer(playerId) {
+    if (isNetworkGame) {
+      if (gs.phase !== 'rolloff' || gs.rolloff[playerId]) return;
+      if (rolloffDice.playerId && rolloffDice.playerId !== playerId) return;
+      if (!rolloffDice.playerId) {
+        setRolloffDice({ playerId, value: 1 + randomInt(10), revealing: false });
+        return;
+      }
+      socketRef.current?.emit('action', { type: 'rolloffRoll', playerId });
+      setRolloffDice({ playerId: null, value: 1, revealing: false });
+      return;
+    }
     if (gs.phase !== 'rolloff' || gs.rolloff[playerId]) return;
     if (rolloffDice.playerId && rolloffDice.playerId !== playerId) return;
     if (!rolloffDice.playerId) {
@@ -690,23 +369,33 @@ function ChessRoyaleGame({ initialState, onBack }) {
   }
 
   function applyHumanRoll(roll) {
-    setGs(prev => {
-      const current = prev.players.find(p => p.id === prev.turnOrder[prev.currentTurnIndex]);
-      const rollText = current?.boosted ? `${roll} con dado mejorado` : roll;
-      return {
-        ...prev,
-        currentRoll: roll,
-        minimapPlayerId: roll > ROYALE_VIEW_SIZE ? current?.id : null,
-        selectedPlayerId: current?.id,
-        players: prev.players.map(p => p.id === current?.id ? { ...p, lastRoll: roll } : p),
-        message: `${current?.name} saco ${rollText}. Elige una casilla iluminada.`,
-      };
-    });
+    setGs(prev => applyBattleRoll(prev, roll));
   }
 
   function handleDiceClick() {
     if (!isHumanDiceStage || diceRevealing) return;
-    const roll = activePlayer?.boosted ? 10 + randomInt(71) : 1 + randomInt(6);
+    if (activePlayer?.trappedTurns > 0) {
+      setTrapMessage('Estas detenido por un turno — Cubo de Peones');
+      setTimeout(() => setTrapMessage(null), 2500);
+      if (isNetworkGame) {
+        socketRef.current?.emit('action', { type: 'trappedSkip' });
+        return;
+      }
+      setGs(prev => ({
+        ...prev,
+        players: prev.players.map(p => p.id === activePlayer.id ? { ...p, trappedTurns: p.trappedTurns - 1 } : p),
+        currentTurnIndex: nextAliveTurnIndex(gs.players, gs.turnOrder, gs.currentTurnIndex),
+        currentRoll: null,
+        cardUsedThisTurn: false,
+        message: `${activePlayer.name} esta atrapado por el Cubo de Peones y pierde su turno.`,
+      }));
+      return;
+    }
+    if (isNetworkGame) {
+      socketRef.current?.emit('action', { type: 'battleRoll' });
+      return;
+    }
+    const roll = activePlayer?.boosted ? 10 + randomInt(71) : 1 + randomInt(10);
     setDisplayedDice(roll);
     setDiceRolling(false);
     setDiceRevealing(true);
@@ -718,11 +407,19 @@ function ChessRoyaleGame({ initialState, onBack }) {
   }
 
   function closeMinimap() {
+    if (isNetworkGame) {
+      socketRef.current?.emit('action', { type: 'closeMinimap' });
+      return;
+    }
     setGs(prev => ({ ...prev, minimapPlayerId: null, pendingTacticCard: null }));
   }
 
   function playCard(cardId) {
     if (!activePlayer || !isHumanTurn || gs.currentRoll || gs.giantMove || gs.pendingTacticCard) return;
+    if (isNetworkGame) {
+      socketRef.current?.emit('action', { type: 'playCard', cardId });
+      return;
+    }
     setGs(prev => playRoyaleCardState(prev, activePlayer.id, cardId));
   }
 
@@ -730,11 +427,19 @@ function ChessRoyaleGame({ initialState, onBack }) {
     if (gs.giantMove || gs.phase !== 'battle' || !activePlayer || !gs.currentRoll || !isHumanTurn) return;
     const isVisibleMove = visibleMoves.some(([r, c]) => r === row && c === col);
     if (!isVisibleMove) return;
+    if (isNetworkGame) {
+      socketRef.current?.emit('action', { type: 'move', row, col });
+      return;
+    }
     setGs(prev => moveRoyalePlayer(prev, { row, col }));
   }
 
   function moveFromMinimap(row, col) {
     if (gs.pendingTacticCard && activePlayer?.id === gs.pendingTacticCard.playerId && pendingTacticCard) {
+      if (isNetworkGame) {
+        socketRef.current?.emit('action', { type: 'tacticTarget', row, col });
+        return;
+      }
       setGs(prev => applyTargetedTactic(prev, activePlayer.id, pendingTacticCard, { row, col }));
       return;
     }
@@ -745,10 +450,18 @@ function ChessRoyaleGame({ initialState, onBack }) {
     if (getNeutralPawnAt(gs.neutralPawns || [], row, col)) return;
     if ((activePlayer.type === 'Q' || activePlayer.type === 'R' || activePlayer.type === 'B') && isRoyaleLineBlocked(gs, activePlayer, destination, activePlayer.id)) return;
     if (!isRoyaleMoveValid(activePlayer.type, activePlayer, destination, gs.currentRoll, true, mapSize)) return;
+    if (isNetworkGame) {
+      socketRef.current?.emit('action', { type: 'boostedMove', row, col });
+      return;
+    }
     setGs(prev => ({ ...moveRoyalePlayer(prev, destination), minimapPlayerId: null }));
   }
 
   function moveGiantPiece(row, col) {
+    if (isNetworkGame) {
+      socketRef.current?.emit('action', { type: 'giantMove', row, col });
+      return;
+    }
     setGs(prev => {
       if (!prev.giantMove?.selectedId) return prev;
       const result = applyGiantMove(prev, prev.giantMove.playerId, prev.giantMove.selectedId, { row, col });
@@ -764,58 +477,7 @@ function ChessRoyaleGame({ initialState, onBack }) {
             : 'La pieza gigante seleccionada ya no esta disponible. Se cancela el movimiento gigante.',
         };
       }
-
-      const events = keepRoyaleEvents([...(prev.events || []), ...result.events]);
-      const lastDeathEvent = result.events.find(event => event.victimId === prev.humanPlayerId && event.type === 'giant-death') || prev.lastDeathEvent;
-      const alive = result.players.filter(player => player.alive);
-      const human = prev.vsBots ? result.players.find(player => player.id === prev.humanPlayerId) : null;
-
-      if (prev.vsBots && human && !human.alive) {
-        return {
-          ...prev,
-          players: result.players,
-          giantPieces: result.giantPieces,
-          events,
-          lastDeathEvent,
-          phase: 'result',
-          winner: alive[0]?.id || null,
-          giantMove: null,
-          minimapPlayerId: null,
-          selectedPlayerId: null,
-          currentRoll: null,
-          botThinkingPlayerId: null,
-          message: 'Has sido eliminado por una pieza gigante.',
-        };
-      }
-
-      if (alive.length === 1) {
-        return {
-          ...prev,
-          players: result.players,
-          giantPieces: result.giantPieces,
-          events,
-          lastDeathEvent,
-          phase: 'result',
-          winner: alive[0].id,
-          giantMove: null,
-          minimapPlayerId: null,
-          selectedPlayerId: null,
-          currentRoll: null,
-          message: `${alive[0].name} gana ChessRoyale.`,
-        };
-      }
-
-      return {
-        ...prev,
-        players: result.players,
-        giantPieces: result.giantPieces,
-        events,
-        lastDeathEvent,
-        giantMove: null,
-        minimapPlayerId: null,
-        selectedPlayerId: null,
-        message: result.message,
-      };
+      return mergeGiantMoveOutcome(prev, result);
     });
   }
 
@@ -867,26 +529,18 @@ function ChessRoyaleGame({ initialState, onBack }) {
     });
   }
 
-  function debugGiveHumanCards() {
-    setGs(prev => {
-      const human = prev.players.find(player => player.id === prev.humanPlayerId);
-      if (!human) return prev;
-      const cards = [
-        makeRoyaleCard('basic', 'Q'),
-        makeRoyaleCard('improved', 'Q'),
-        makeRoyaleCard('reveal', null, 'reveal'),
-        makeRoyaleCard('reveal', null, 'fog'),
-        makeRoyaleCard('reveal', null, 'scorched'),
-        makeRoyaleCard('reveal', null, 'wall'),
-        makeRoyaleCard('reveal', null, 'secondChance'),
-      ];
-      return {
-        ...prev,
-        players: prev.players.map(player => player.id === human.id ? { ...player, cards: addRoyaleCards(player.cards || [], cards) } : player),
-        message: 'Debug: cartas de pieza y tacticas agregadas a tu mano.',
-      };
-    });
-  }
+function debugGiveHumanCard(specialType, type, effect) {
+  setGs(prev => {
+    const human = prev.players.find(player => player.id === prev.humanPlayerId);
+    if (!human) return prev;
+    const card = makeRoyaleCard(specialType, type === 'null' ? null : type, effect);
+    return {
+      ...prev,
+      players: prev.players.map(player => player.id === human.id ? { ...player, cards: addRoyaleCards(player.cards || [], [card]) } : player),
+      message: `Debug: carta ${getRoyaleCardLabel(card)} agregada a tu mano.`,
+    };
+  });
+}
 
   function debugMoveNextToEnemy() {
     setGs(prev => {
@@ -971,11 +625,25 @@ function ChessRoyaleGame({ initialState, onBack }) {
   }
 
   function restart() {
+    if (isNetworkGame) {
+      socketRef.current?.emit('action', { type: 'restart' });
+      return;
+    }
     setGs(initChessRoyale(gs.config));
   }
 
+  const waitingOverlay = isNetworkGame && !serverSynced;
+
   return (
     <div className="royale-screen">
+      {waitingOverlay && (
+        <div className="result-overlay" style={{ background: 'rgba(0,0,0,0.55)' }}>
+          <div className="result-card" style={{ maxWidth: 420 }}>
+            <div className="result-title">Esperando jugadores</div>
+            <div className="result-sub">La partida comenzara cuando se unan todos los jugadores al servidor.</div>
+          </div>
+        </div>
+      )}
       <div className="royale-topbar">
         <div>
           <div className="game-logo">ChessRoyale</div>
@@ -1026,7 +694,7 @@ function ChessRoyaleGame({ initialState, onBack }) {
             <div className="royale-message">{gs.message}</div>
           </div>
 
-          {debugEnabled && (
+          {debugEnabled && !isNetworkGame && (
             <div className="panel-box royale-debug-panel">
               <div className="panel-title">Admin Debug</div>
               <div className="royale-debug-label">Partida</div>
@@ -1045,7 +713,45 @@ function ChessRoyaleGame({ initialState, onBack }) {
               </div>
               <div className="royale-debug-label">Cartas y gigantes</div>
               <div className="royale-debug-grid">
-                <button className="btn btn-ghost" onClick={debugGiveHumanCards}>Dar cartas</button>
+                <select
+                    value={debugCardPick || ''}
+                    onChange={e => setDebugCardPick(e.target.value || null)}
+                    style={{ fontSize: '0.75rem', padding: '4px 6px' }}
+                  >
+                    <option value="">— Elegir carta —</option>
+                    <optgroup label="Piezas básicas">
+                      {ROYALE_BASIC_PIECES.map(type => (
+                        <option key={`basic-${type}`} value={`basic|${type}|piece`}>
+                          {PIECES[type]?.label} básica
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Piezas mejoradas">
+                      {ROYALE_IMPROVED_PIECES.map(type => (
+                        <option key={`improved-${type}`} value={`improved|${type}|piece`}>
+                          {PIECES[type]?.label} mejorada
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Tácticas">
+                      {ROYALE_TACTIC_CARDS.map(effect => (
+                        <option key={`tactic-${effect}`} value={`reveal|null|${effect}`}>
+                          {ROYALE_TACTIC_META[effect]?.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                  <button
+                    className="btn btn-ghost"
+                    disabled={!debugCardPick}
+                    onClick={() => {
+                      if (!debugCardPick) return;
+                      const [specialType, type, effect] = debugCardPick.split('|');
+                      debugGiveHumanCard(specialType, type, effect);
+                    }}
+                  >
+                    Agregar
+                  </button>
                 <button className="btn btn-ghost" onClick={debugTriggerGiantMove}>Probar gigante</button>
               </div>
               <div className="royale-debug-label">Sonidos</div>
@@ -1114,7 +820,11 @@ function ChessRoyaleGame({ initialState, onBack }) {
                 <div className="panel-title">Turno actual</div>
                 {isHumanTurn ? (
                   <>
-                    <div className="royale-turn-alert">Es tu turno</div>
+                    {activePlayer.trappedTurns > 0 && (
+                      <div className="royale-turn-alert" style={{ background: '#ff7676', color: '#fff' }}>
+                        Estas atrapado — pierdes este turno
+                      </div>
+                    )}
                     <div className="royale-active-name" style={{ color: activePlayer.color }}>{activePlayer.name}</div>
                     <div className="royale-stat-line">Pieza: {PIECES[activePlayer.type]?.label}</div>
                     <div className="royale-stat-line">Posicion: {activePlayer.row + 1}, {activePlayer.col + 1}</div>
@@ -1147,12 +857,24 @@ function ChessRoyaleGame({ initialState, onBack }) {
                     </div>
                     {!gs.currentRoll && <div className="royale-dice-hint">Usa el dado del centro del tablero.</div>}
                     {activePlayer.boosted && gs.currentRoll && (
-                      <button className="btn btn-ghost royale-fog-btn" onClick={() => setGs(prev => ({ ...prev, minimapPlayerId: activePlayer.id }))}>
+                      <button
+                        className="btn btn-ghost royale-fog-btn"
+                        onClick={() => {
+                          if (isNetworkGame) socketRef.current?.emit('action', { type: 'openMinimap' });
+                          else setGs(prev => ({ ...prev, minimapPlayerId: activePlayer.id }));
+                        }}
+                      >
                         Tirar en minimapa
                       </button>
                     )}
                     {activePlayer.revealEnemies && (
-                      <button className="btn btn-ghost royale-fog-btn" onClick={() => setGs(prev => ({ ...prev, minimapPlayerId: activePlayer.id }))}>
+                      <button
+                        className="btn btn-ghost royale-fog-btn"
+                        onClick={() => {
+                          if (isNetworkGame) socketRef.current?.emit('action', { type: 'openMinimap' });
+                          else setGs(prev => ({ ...prev, minimapPlayerId: activePlayer.id }));
+                        }}
+                      >
                         Ver enemigos
                       </button>
                     )}
@@ -1188,27 +910,47 @@ function ChessRoyaleGame({ initialState, onBack }) {
         </div>
 
         <div className="royale-board-wrap">
-          {activePlayer ? (
-            <>
-              <div className={`royale-board-stage ${isHumanDiceStage ? 'is-hidden' : ''}`}>
-                <RoyaleBoard
-                  gs={gs}
-                  activePlayer={boardPlayer}
-                  visibleMoves={visibleMoves}
-                  onCellClick={moveTo}
-                  helpers={{ getRoyaleViewOrigin, getRoyaleSize, getGiantPieceAt, getNeutralPawnAt, getRadioactiveCellAt, getFogZoneAt, getRoyalePlayerAt, royalePieceSymbol }}
-                  constants={{ ROYALE_VIEW_SIZE, ROYALE_GIANT_SIZE }}
-                />
-              </div>
-              {isHumanDiceStage && (
-                <button className={`royale-center-die ${diceRolling ? 'is-rolling' : ''} ${diceRevealing ? 'is-revealed' : ''}`} onClick={handleDiceClick}>
-                  <span className="royale-die-number">{displayedDice}</span>
-                  <span className="royale-die-label">{diceRevealing ? 'Tu tirada' : 'Detener'}</span>
-                </button>
-              )}
-            </>
-          ) : null}
+  {activePlayer ? (
+    <>
+      {trapMessage && (
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          background: '#ff7676',
+          color: '#fff',
+          fontWeight: 500,
+          fontSize: '1.1rem',
+          padding: '18px 32px',
+          borderRadius: '12px',
+          zIndex: 100,
+          textAlign: 'center',
+          pointerEvents: 'none',
+          boxShadow: '0 4px 24px rgba(0,0,0,0.25)',
+        }}>
+          ♟ {trapMessage}
         </div>
+      )}
+      <div className={`royale-board-stage ${isHumanDiceStage ? 'is-hidden' : ''}`}>
+        <RoyaleBoard
+          gs={gs}
+          activePlayer={boardPlayer}
+          visibleMoves={visibleMoves}
+          onCellClick={moveTo}
+          helpers={{ getRoyaleViewOrigin, getRoyaleSize, getGiantPieceAt, getNeutralPawnAt, getRadioactiveCellAt, getFogZoneAt, getRoyalePlayerAt, royalePieceSymbol }}
+          constants={{ ROYALE_VIEW_SIZE, ROYALE_GIANT_SIZE }}
+        />
+      </div>
+      {isHumanDiceStage && (
+        <button className={`royale-center-die ${diceRolling ? 'is-rolling' : ''} ${diceRevealing ? 'is-revealed' : ''}`} onClick={handleDiceClick}>
+          <span className="royale-die-number">{displayedDice}</span>
+          <span className="royale-die-label">{diceRevealing ? 'Tu tirada' : 'Detener'}</span>
+        </button>
+      )}
+    </>
+  ) : null}
+</div>
 
         <aside className="royale-side">
           <RoyaleClosingMinimap
