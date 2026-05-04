@@ -103,6 +103,7 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
   const battleMusicRef = useRef(null);
   const serverUrl = online ? (online.serverUrl || process.env.REACT_APP_SOCKET_URL || '') : '';
   const isNetworkGame = Boolean(serverUrl);
+  const joinConfigRef = useRef(online?.config || { playerCount: 2, vsBots: false, mapSize: 60, initialLives: 3 });
   const activeId = gs.turnOrder[gs.currentTurnIndex];
   const activePlayer = gs.players.find(p => p.id === activeId) || gs.players.find(p => p.alive);
   const myPlayerId = assignedPlayerId ?? gs.humanPlayerId;
@@ -184,7 +185,7 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
     });
     socket.emit('join', {
       playerName: online?.playerName?.trim() || 'Jugador',
-      config: online?.config || { playerCount: 2, vsBots: false, mapSize: 60, initialLives: 3 },
+      config: joinConfigRef.current,
     });
     return () => {
       socket.disconnect();
@@ -253,7 +254,7 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
 
     const timer = setTimeout(() => setGs(prev => applyRoyaleRolloff(prev, nextBot.id)), 650);
     return () => clearTimeout(timer);
-  }, [gs.vsBots, gs.phase, gs.rolloff, gs.players]);
+  }, [isNetworkGame, gs.vsBots, gs.phase, gs.rolloff, gs.players]);
 
   useEffect(() => {
     if (isNetworkGame || gs.giantMove || !gs.vsBots || gs.phase !== 'battle' || !activePlayer?.isBot || gs.botThinkingPlayerId) return undefined;
@@ -270,7 +271,7 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
       message: `${activePlayer.name} tirando. Faltan ${getTurnsUntilPlayer(prev, myPlayerId)} turnos para ti.`,
     }));
     return undefined;
-  }, [gs.giantMove, gs.vsBots, gs.phase, activePlayer?.id, activePlayer?.isBot, activePlayer?.name, gs.botThinkingPlayerId]);
+  }, [isNetworkGame, myPlayerId, gs.giantMove, gs.vsBots, gs.phase, activePlayer?.id, activePlayer?.isBot, activePlayer?.name, gs.botThinkingPlayerId]);
 
   useEffect(() => {
     if (isNetworkGame || gs.giantMove || !gs.vsBots || gs.phase !== 'battle' || !activePlayer?.isBot || gs.botThinkingPlayerId !== activePlayer.id) return undefined;
@@ -338,7 +339,7 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
     }, gs.currentRoll ? 1250 : 700);
 
     return () => clearTimeout(timer);
-  }, [gs.giantMove, gs.vsBots, gs.phase, gs.currentRoll, activePlayer?.id, activePlayer?.isBot, gs.botThinkingPlayerId]);
+  }, [isNetworkGame, gs.giantMove, gs.vsBots, gs.phase, gs.currentRoll, activePlayer?.id, activePlayer?.isBot, gs.botThinkingPlayerId]);
 
   function rollForPlayer(playerId) {
     if (isNetworkGame) {

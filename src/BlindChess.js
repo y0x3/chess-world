@@ -287,6 +287,8 @@ function BlindChessGame({ initialState, config, onBack }) {
     }, 1000);
 
     return () => clearInterval(timerRef.current);
+  // commitHumanDone is intentionally excluded: this timer effect depends only on game-state flags.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gs.phase, gs.placementTurn, gs.wDone, gs.bDone, gs.vsBot]);
 
   // â”€â”€ BOT BATTLE MOVE â”€â”€
