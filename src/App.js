@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import './App.css';
 import BlindChessGame, { initBlindGame } from './BlindChess';
 import ChessRoyaleGame, { initChessRoyale } from './ChessRoyaleGame';
@@ -53,6 +53,11 @@ export default function App() {
         }}
         online={{
           serverUrl: royaleOnline?.serverUrl || DEFAULT_SOCKET_URL,
+          mode: royaleOnline?.mode || 'create',
+          roomCode: royaleOnline?.roomCode || '',
+          visibility: royaleOnline?.visibility || 'public',
+          roomPassword: royaleOnline?.roomPassword || '',
+          joinPassword: royaleOnline?.joinPassword || '',
           playerName: royaleOnline?.playerName,
           config: {
             playerCount: royaleOnline?.playerCount,
@@ -346,7 +351,13 @@ function RoyaleSetupScreen({ onBack, onStart }) {
 
 function RoyaleOnlineSetupScreen({ onBack, onStart }) {
   const [playerName, setPlayerName] = useState('Jugador');
-  const [serverUrl, setServerUrl] = useState(DEFAULT_SOCKET_URL);
+  const [mode, setMode] = useState('create');
+  const [roomCode, setRoomCode] = useState('');
+  const [visibility, setVisibility] = useState('public');
+  const [roomPassword, setRoomPassword] = useState('');
+  const [joinPassword, setJoinPassword] = useState('');
+  const [roomsLoading, setRoomsLoading] = useState(false);
+  const [publicRooms, setPublicRooms] = useState([]);
   const [playerCount, setPlayerCount] = useState(2);
   const [mapSize, setMapSize] = useState(60);
   const [initialLives, setInitialLives] = useState(3);
@@ -378,17 +389,34 @@ function RoyaleOnlineSetupScreen({ onBack, onStart }) {
     setSpecialCounts(suggestedSpecialCounts(nextMapSize));
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRooms() {
+      if (cancelled) return;
+      setRoomsLoading(true);
+      try {
+        const response = await fetch(`${DEFAULT_SOCKET_URL}/rooms`);
+        const data = await response.json();
+        if (!cancelled) setPublicRooms(Array.isArray(data?.rooms) ? data.rooms : []);
+      } catch (_err) {
+        if (!cancelled) setPublicRooms([]);
+      } finally {
+        if (!cancelled) setRoomsLoading(false);
+      }
+    }
+    loadRooms();
+    const timer = setInterval(loadRooms, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
   return (
     <div className="setup-screen">
       <div className="setup-card">
         <div className="setup-title">ChessRoyale Online</div>
-        <div className="setup-sub">El estado lo autoriza el servidor (Express + Socket.io). Ejecuta <code>npm run server</code> en otra terminal antes de unirte.</div>
-
-        <div className="form-group">
-          <label className="form-label">URL del servidor</label>
-          <input className="form-input" value={serverUrl} onChange={e => setServerUrl(e.target.value)} placeholder="http://localhost:4000" />
-          <div className="setup-hint">En otra PC de la red usa la IP de tu PC en lugar de localhost.</div>
-        </div>
+        <div className="setup-sub">Sistema de salas: crea una sala y comparte el codigo. El servidor se toma de <code>REACT_APP_SOCKET_URL</code>.</div>
 
         <div className="form-group">
           <label className="form-label">Tu nombre</label>
@@ -396,91 +424,201 @@ function RoyaleOnlineSetupScreen({ onBack, onStart }) {
         </div>
 
         <div className="form-group">
-          <label className="form-label">Jugadores en la partida</label>
-          <input
-            className="form-input"
-            type="number"
-            min={2}
-            max={8}
-            value={playerCount}
-            onChange={e => setCountAndMap(e.target.value)}
-          />
-        </div>
-
-        <div className="royale-player-count">
-          {[2, 3, 4, 5, 6, 7, 8].map(count => (
+          <label className="form-label">Modo</label>
+          <div className="royale-player-count">
             <button
-              key={count}
-              className={`royale-count-btn ${playerCount === count ? 'is-selected' : ''}`}
-              onClick={() => setCountAndMap(count)}
+              className={`royale-count-btn ${mode === 'create' ? 'is-selected' : ''}`}
+              onClick={() => setMode('create')}
             >
-              {count}
+              Crear sala
             </button>
-          ))}
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Tamano del mapa</label>
-          <input
-            className="form-input"
-            type="number"
-            min={30}
-            max={120}
-            value={mapSize}
-            onChange={e => setSizeAndSpecials(e.target.value)}
-          />
-          <div className="setup-hint">Recomendado para {playerCount} jugadores: {suggestedMapSize(playerCount)} x {suggestedMapSize(playerCount)}.</div>
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Vidas por jugador</label>
-          <input
-            className="form-input"
-            type="number"
-            min={1}
-            max={10}
-            value={initialLives}
-            onChange={e => setInitialLives(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
-          />
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Casillas especiales del mapa</label>
-          <div className="royale-special-counts">
-            <label>
-              <span><i className="royale-mini-swatch basic" /> Basicas</span>
-              <input className="form-input" type="number" min={0} value={specialCounts.basic} onChange={e => setSpecialCount('basic', e.target.value)} />
-            </label>
-            <label>
-              <span><i className="royale-mini-swatch improved" /> Mejoradas</span>
-              <input className="form-input" type="number" min={0} value={specialCounts.improved} onChange={e => setSpecialCount('improved', e.target.value)} />
-            </label>
-            <label>
-              <span><i className="royale-mini-swatch reveal" /> Tacticas</span>
-              <input className="form-input" type="number" min={0} value={specialCounts.reveal} onChange={e => setSpecialCount('reveal', e.target.value)} />
-            </label>
-            <label>
-              <span><i className="royale-mini-swatch special" /> Gigantes</span>
-              <input className="form-input" type="number" min={0} value={specialCounts.special} onChange={e => setSpecialCount('special', e.target.value)} />
-            </label>
+            <button
+              className={`royale-count-btn ${mode === 'join' ? 'is-selected' : ''}`}
+              onClick={() => setMode('join')}
+            >
+              Unirme por codigo
+            </button>
           </div>
         </div>
+
+        {mode === 'join' && (
+          <>
+            <div className="form-group">
+              <label className="form-label">Salas publicas disponibles</label>
+              {roomsLoading && <div className="setup-hint">Buscando salas...</div>}
+              {!roomsLoading && !publicRooms.length && <div className="setup-hint">No hay salas publicas disponibles ahora.</div>}
+              {!roomsLoading && publicRooms.length > 0 && (
+                <div className="royale-player-count">
+                  {publicRooms.map(room => (
+                    <button
+                      key={room.roomCode}
+                      className={`royale-count-btn ${roomCode === room.roomCode ? 'is-selected' : ''}`}
+                      onClick={() => {
+                        setRoomCode(room.roomCode);
+                        setJoinPassword('');
+                      }}
+                      title={`${room.playersJoined}/${room.playerCount} jugadores`}
+                    >
+                      {room.roomCode} ({room.playersJoined}/{room.playerCount})
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Codigo de sala</label>
+              <input
+                className="form-input"
+                value={roomCode}
+                onChange={e => setRoomCode(e.target.value.toUpperCase())}
+                placeholder="Ej: A7K9P2"
+                maxLength={6}
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Contrasena (solo salas privadas)</label>
+              <input
+                className="form-input"
+                type="password"
+                value={joinPassword}
+                onChange={e => setJoinPassword(e.target.value)}
+                placeholder="Si la sala es privada, escribela aqui"
+              />
+            </div>
+          </>
+        )}
+
+        {mode === 'create' && (
+          <>
+            <div className="form-group">
+              <label className="form-label">Jugadores en la partida</label>
+              <input
+                className="form-input"
+                type="number"
+                min={2}
+                max={8}
+                value={playerCount}
+                onChange={e => setCountAndMap(e.target.value)}
+              />
+            </div>
+
+            <div className="royale-player-count">
+              {[2, 3, 4, 5, 6, 7, 8].map(count => (
+                <button
+                  key={count}
+                  className={`royale-count-btn ${playerCount === count ? 'is-selected' : ''}`}
+                  onClick={() => setCountAndMap(count)}
+                >
+                  {count}
+                </button>
+              ))}
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Tamano del mapa</label>
+              <input
+                className="form-input"
+                type="number"
+                min={30}
+                max={120}
+                value={mapSize}
+                onChange={e => setSizeAndSpecials(e.target.value)}
+              />
+              <div className="setup-hint">Recomendado para {playerCount} jugadores: {suggestedMapSize(playerCount)} x {suggestedMapSize(playerCount)}.</div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Vidas por jugador</label>
+              <input
+                className="form-input"
+                type="number"
+                min={1}
+                max={10}
+                value={initialLives}
+                onChange={e => setInitialLives(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Tipo de sala</label>
+              <div className="royale-player-count">
+                <button
+                  className={`royale-count-btn ${visibility === 'public' ? 'is-selected' : ''}`}
+                  onClick={() => setVisibility('public')}
+                >
+                  Publica
+                </button>
+                <button
+                  className={`royale-count-btn ${visibility === 'private' ? 'is-selected' : ''}`}
+                  onClick={() => setVisibility('private')}
+                >
+                  Privada
+                </button>
+              </div>
+            </div>
+
+            {visibility === 'private' && (
+              <div className="form-group">
+                <label className="form-label">Contrasena de sala</label>
+                <input
+                  className="form-input"
+                  type="password"
+                  value={roomPassword}
+                  onChange={e => setRoomPassword(e.target.value)}
+                  placeholder="Minimo 1 caracter"
+                />
+              </div>
+            )}
+
+            <div className="form-group">
+              <label className="form-label">Casillas especiales del mapa</label>
+              <div className="royale-special-counts">
+                <label>
+                  <span><i className="royale-mini-swatch basic" /> Basicas</span>
+                  <input className="form-input" type="number" min={0} value={specialCounts.basic} onChange={e => setSpecialCount('basic', e.target.value)} />
+                </label>
+                <label>
+                  <span><i className="royale-mini-swatch improved" /> Mejoradas</span>
+                  <input className="form-input" type="number" min={0} value={specialCounts.improved} onChange={e => setSpecialCount('improved', e.target.value)} />
+                </label>
+                <label>
+                  <span><i className="royale-mini-swatch reveal" /> Tacticas</span>
+                  <input className="form-input" type="number" min={0} value={specialCounts.reveal} onChange={e => setSpecialCount('reveal', e.target.value)} />
+                </label>
+                <label>
+                  <span><i className="royale-mini-swatch special" /> Gigantes</span>
+                  <input className="form-input" type="number" min={0} value={specialCounts.special} onChange={e => setSpecialCount('special', e.target.value)} />
+                </label>
+              </div>
+            </div>
+          </>
+        )}
 
         <div className="bot-info-box">
           <div className="bot-info-icon">{'\u25CE'}</div>
           <div>
-            <div className="bot-info-title">Multijugador</div>
+            <div className="bot-info-title">Multijugador por salas</div>
             <div className="bot-info-desc">
-              Deben conectarse exactamente el numero de jugadores elegido; cuando la sala esta llena, el servidor genera el mapa y el sorteo inicial. Los dados y la zona son autoritativos en el servidor.
+              {mode === 'create'
+                ? 'Crea la sala, comparte el codigo y espera a que se complete el numero de jugadores.'
+                : 'Ingresa el codigo que te compartio el host para entrar a su partida.'}
             </div>
           </div>
         </div>
 
         <button
           className="btn btn-primary"
+          disabled={mode === 'create' ? (visibility === 'private' && !roomPassword.trim()) : !roomCode.trim()}
           onClick={() =>
             onStart({
-              serverUrl: serverUrl.trim() || DEFAULT_SOCKET_URL,
+              serverUrl: DEFAULT_SOCKET_URL,
+              mode,
+              roomCode: roomCode.trim().toUpperCase(),
+              visibility,
+              roomPassword,
+              joinPassword,
               playerName,
               playerCount,
               mapSize,
@@ -489,7 +627,7 @@ function RoyaleOnlineSetupScreen({ onBack, onStart }) {
             })
           }
         >
-          Conectar y esperar sala
+          {mode === 'create' ? 'Crear sala y esperar jugadores' : 'Entrar a la sala'}
         </button>
         <div style={{ marginTop: '1rem' }}>
           <button className="btn btn-ghost" style={{ width: '100%' }} onClick={onBack}>Volver al Menu</button>

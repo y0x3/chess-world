@@ -92,6 +92,10 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
   const [gs, setGs] = useState(initialState);
   const [assignedPlayerId, setAssignedPlayerId] = useState(null);
   const [serverSynced, setServerSynced] = useState(!online);
+  const [roomCode, setRoomCode] = useState(online?.roomCode || null);
+  const [roomInfo, setRoomInfo] = useState(null);
+  const [joinError, setJoinError] = useState(null);
+  const [copiedRoomCode, setCopiedRoomCode] = useState(false);
   const [diceRolling, setDiceRolling] = useState(false);
   const [diceRevealing, setDiceRevealing] = useState(false);
   const [displayedDice, setDisplayedDice] = useState(1);
@@ -183,19 +187,40 @@ function ChessRoyaleGame({ initialState, onBack, online }) {
     const socket = io(serverUrl, { path: '/socket.io', transports: ['websocket', 'polling'] });
     socketRef.current = socket;
     socket.on('assigned', ({ playerId }) => setAssignedPlayerId(playerId));
+    socket.on('roomCreated', ({ roomCode: nextRoomCode }) => {
+      setRoomCode(nextRoomCode);
+      setJoinError(null);
+    });
+    socket.on('roomInfo', info => {
+      setRoomInfo(info);
+      setJoinError(null);
+    });
+    socket.on('joinError', ({ message }) => {
+      setJoinError(message || 'No fue posible unirse a la sala.');
+    });
     socket.on('stateUpdate', next => {
       setGs(next);
       setServerSynced(true);
     });
-    socket.emit('join', {
-      playerName: online?.playerName?.trim() || 'Jugador',
-      config: joinConfigRef.current,
-    });
+    if (online?.mode === 'join') {
+      socket.emit('joinRoom', {
+        roomCode: String(online?.roomCode || '').toUpperCase(),
+        playerName: online?.playerName?.trim() || 'Jugador',
+        password: online?.joinPassword || '',
+      });
+    } else {
+      socket.emit('createRoom', {
+        playerName: online?.playerName?.trim() || 'Jugador',
+        config: joinConfigRef.current,
+        visibility: online?.visibility || 'public',
+        password: online?.roomPassword || '',
+      });
+    }
     return () => {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [isNetworkGame, serverUrl, online?.playerName]);
+  }, [isNetworkGame, serverUrl, online?.playerName, online?.mode, online?.roomCode, online?.visibility, online?.roomPassword, online?.joinPassword]);
 
   useEffect(() => {
     if (!diceRolling || !activePlayerId) return undefined;
@@ -637,6 +662,14 @@ function debugGiveHumanCard(specialType, type, effect) {
     setGs(initChessRoyale(gs.config));
   }
 
+  function copyRoomCode() {
+    if (!roomCode || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+    navigator.clipboard.writeText(roomCode).then(() => {
+      setCopiedRoomCode(true);
+      setTimeout(() => setCopiedRoomCode(false), 1600);
+    }).catch(() => {});
+  }
+
   const waitingOverlay = isNetworkGame && !serverSynced;
 
   return (
@@ -645,7 +678,24 @@ function debugGiveHumanCard(specialType, type, effect) {
         <div className="result-overlay" style={{ background: 'rgba(0,0,0,0.55)' }}>
           <div className="result-card" style={{ maxWidth: 420 }}>
             <div className="result-title">Esperando jugadores</div>
-            <div className="result-sub">La partida comenzara cuando se unan todos los jugadores al servidor.</div>
+            <div className="result-sub">La partida comenzara cuando se unan todos los jugadores a la sala.</div>
+            {roomCode && <div className="result-sub" style={{ marginTop: 8 }}>Codigo de sala: <strong>{roomCode}</strong></div>}
+            {roomInfo?.visibility && (
+              <div className="result-sub" style={{ marginTop: 6 }}>
+                Tipo: <strong>{roomInfo.visibility === 'private' ? 'Privada' : 'Publica'}</strong>
+              </div>
+            )}
+            {roomInfo && <div className="result-sub">Jugadores: {roomInfo.playersJoined}/{roomInfo.playerCount}</div>}
+            {roomCode && (
+              <button
+                className="btn btn-ghost"
+                style={{ marginTop: 10, width: '100%' }}
+                onClick={copyRoomCode}
+              >
+                {copiedRoomCode ? 'Codigo copiado' : 'Copiar codigo de sala'}
+              </button>
+            )}
+            {joinError && <div className="result-sub" style={{ color: '#ff7676', marginTop: 8 }}>{joinError}</div>}
           </div>
         </div>
       )}
